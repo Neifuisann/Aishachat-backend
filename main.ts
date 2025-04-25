@@ -542,13 +542,13 @@ server.on("upgrade", async (req, socket, head) => {
 /******************************************************************************
  * Run the server
  ******************************************************************************/
-// if (isDev) {
-//   const HOST = Deno.env.get("HOST") || "0.0.0.0";
-//   const PORT = Number(Deno.env.get("PORT") || 8000);
-//   server.listen(PORT, HOST, () => {
-//     console.log(`Server running on ws://${HOST}:${PORT}`);
-//   });
-// } else {
-//   server.listen(8080);
-//   console.log("Server listening on port 8080");
-// }
+if (isDev) {
+  const HOST = Deno.env.get("HOST") || "0.0.0.0";
+  const PORT = Number(Deno.env.get("PORT") || 8000);
+  server.listen(PORT, HOST, () => {
+    console.log(`Server running on ws://${HOST}:${PORT}`);
+  });
+} else {
+  server.listen(8080);
+  console.log("Server listening on port 8080");
+}
