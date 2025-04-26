@@ -257,7 +257,7 @@ wss.on("connection", async (ws: WSWebSocket, payload: { user: any; supabase: Sup
           },
           realtimeInputConfig: {
             automaticActivityDetection: {
-              silenceDurationMs: 2000,
+              silenceDurationMs: 800,
             },
             turnCoverage: "TURN_INCLUDES_ONLY_ACTIVITY",
           },
