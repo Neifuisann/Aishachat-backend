@@ -253,7 +253,7 @@ wss.on("connection", async (ws: WSWebSocket, payload: { user: any; supabase: Sup
           },
           realtimeInputConfig: {
             automaticActivityDetection: {},
-            turnCoverage: {},
+            turnCoverage: "TURN_INCLUDES_ONLY_ACTIVITY",
           },
           outputAudioTranscription: {},
           contextWindowCompression: {
