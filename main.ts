@@ -249,7 +249,7 @@ wss.on("connection", async (ws: WSWebSocket, payload: { user: any; supabase: Sup
           },
           systemInstruction: {
             role: "system",
-            parts: [{ text: "YOU MUST RESPONSE FLAWLESSLY IN VIETNAMESE" + systemPrompt || "You are a helpful assistant." }],
+            parts: [{ text: "YOU MUST RESPONSE IN VIETNAMESE ONLY! " + systemPrompt || "You are a helpful assistant." }],
           },
           realtimeInputConfig: {
             automaticActivityDetection: {},
