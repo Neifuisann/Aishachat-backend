@@ -239,7 +239,7 @@ wss.on("connection", async (ws: WSWebSocket, payload: { user: any; supabase: Sup
           model: "models/gemini-2.0-flash-live-001",
           generationConfig: {
             responseModalities: ["AUDIO"],
-            media_resolution: "MEDIA_RESOLUTION_LOW",
+            // media_resolution: "MEDIA_RESOLUTION_LOW",
             speechConfig: {
               voiceConfig: {
                 prebuiltVoiceConfig: { voiceName: user.personality?.oai_voice || "Leda" },
@@ -251,8 +251,14 @@ wss.on("connection", async (ws: WSWebSocket, payload: { user: any; supabase: Sup
             role: "system",
             parts: [{ text: "YOU MUST RESPONSE IN VIETNAMESE ONLY! " + systemPrompt || "You are a helpful assistant." }],
           },
+          tools: {
+            google_search:{},
+            code_execution:{},
+          },
           realtimeInputConfig: {
-            automaticActivityDetection: {},
+            automaticActivityDetection: {
+              silenceDurationMs: 2000,
+            },
             turnCoverage: "TURN_INCLUDES_ONLY_ACTIVITY",
           },
           outputAudioTranscription: {},
@@ -268,7 +274,7 @@ wss.on("connection", async (ws: WSWebSocket, payload: { user: any; supabase: Sup
         console.log("No prior chat => forced user turn: Hello");
         const userTurn = {
           clientContent: {
-            turns: [{ role: "user", parts: [{ text: "Hello" }] }],
+            turns: [{ role: "user", parts: [{ text: "Xin chào" }] }],
             turnComplete: true,
           },
         };
