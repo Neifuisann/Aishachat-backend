@@ -239,10 +239,12 @@ wss.on("connection", async (ws: WSWebSocket, payload: { user: any; supabase: Sup
           model: "models/gemini-2.0-flash-live-001",
           generationConfig: {
             responseModalities: ["AUDIO"],
+            media_resolution: ["MEDIA_RESOLUTION_LOW"],
             speechConfig: {
               voiceConfig: {
-                prebuiltVoiceConfig: { voiceName: user.personality?.oai_voice || "Puck" },
+                prebuiltVoiceConfig: { voiceName: user.personality?.oai_voice || "Leda" },
               },
+              language_code: "vi-VN",
             },
           },
           systemInstruction: {
@@ -251,6 +253,11 @@ wss.on("connection", async (ws: WSWebSocket, payload: { user: any; supabase: Sup
           },
           realtimeInputConfig: {
             automaticActivityDetection: {},
+            turnCoverage: {},
+          },
+          outputAudioTranscription: {},
+          contextWindowCompression: {
+            slidingWindow: {},
           },
         },
       };
