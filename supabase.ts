@@ -241,36 +241,29 @@ export const createFirstMessage = (
 };
 
 export const createSystemPrompt = (
-    chatHistory: IConversation[],
+    chatHistoryData: IConversation[],
     payload: IPayload,
+    currentVolume?: number | null
 ): string => {
     const { user, timestamp } = payload;
-    const chatHistoryString = composeChatHistory(chatHistory);
-    console.log("chatHistoryString", chatHistoryString);
-    const commonPrompt = getCommonPromptTemplate(
-        chatHistoryString,
-        user,
-        timestamp,
-    );
+    const chatHistory = composeChatHistory(chatHistoryData);
 
-    const isStory = user.personality?.is_story;
-    if (isStory) {
-        const storyPrompt = getStoryPromptTemplate(user, chatHistoryString);
-        return storyPrompt;
+    let prompt = "";
+
+    // Add current volume information if available
+    if (currentVolume !== undefined && currentVolume !== null) {
+        prompt += `[SYSTEM INFO] The current device volume is set to ${currentVolume}%\n`;
     }
 
-    let systemPrompt: string;
-    switch (user.user_info.user_type) {
-        case "user":
-            systemPrompt = UserPromptTemplate(user);
-            break;
-        case "doctor":
-            systemPrompt = DoctorPromptTemplate(user, chatHistory);
-            break;
-        default:
-            throw new Error("Invalid user type");
+    if (user.user_info.user_type === "doctor") {
+        prompt += DoctorPromptTemplate(user, chatHistoryData);
+    } else {
+        prompt += UserPromptTemplate(user);
     }
-    return commonPrompt + systemPrompt;
+
+    prompt += getCommonPromptTemplate(chatHistory, user, timestamp);
+
+    return prompt;
 };
 
 export const addConversation = async (

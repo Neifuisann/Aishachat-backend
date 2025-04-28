@@ -1,6 +1,6 @@
 import * as jose from "https://deno.land/x/jose@v5.9.6/index.ts";
 import { getUserByEmail } from "./supabase.ts";
-import { SupabaseClient } from "@supabase/supabase-js";
+import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import crypto from "node:crypto";
 import { Buffer } from "node:buffer";
 
