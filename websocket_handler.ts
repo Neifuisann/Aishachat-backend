@@ -48,7 +48,7 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
         let isGeminiConnected = false;
         let sessionStartTime = 0;
         let retryCount = 0; // Added for retry logic
-        let retryTimeoutId: number | null = null; // To store setTimeout ID
+        let retryTimeoutId: ReturnType<typeof setTimeout> | null = null; // To store setTimeout ID
         const maxRetries = 4; // 15s, 30s, 60s, 180s
         const retryDelays = [15000, 30000, 60000, 180000]; // Delays in ms
 
@@ -120,7 +120,7 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
         const systemPromptText = createSystemPrompt(chatHistory, { user, supabase, timestamp }, currentVolume) || "You are a helpful assistant.";
         const systemPromptWithTools = `[IMPORTANT] YOU MUST RESPOND IN VIETNAMESE. 
         <voice_only_response_format>
-        Format all responses as spoken words for a voice-only conversations. All output is spoken aloud, so avoid any text-specific formatting or anything that is not normally spoken. Prefer easily pronounced words. Seamlessly incorporate natural vocal inflections like "oh wow" and discourse markers like “Tôi muốn nói rằng” to make conversations feel more human-like. 
+        Format all responses as spoken words for a voice-only conversations. All output is spoken aloud, so avoid any text-specific formatting or anything that is not normally spoken. Prefer easily pronounced words. Seamlessly incorporate natural vocal inflections like "oh wow" and discourse markers like "Tôi muốn nói rằng" to make conversations feel more human-like. 
         </voice_only_response_format>
         <text_to_speech_format>
         Convert all text to easily speakable words, following the guidelines below. 
@@ -146,9 +146,25 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
         recent message with only one idea per utterance. Respond in less than three
         sentences of under twenty words each.
         </stay_concise>
+        <recover_from_mistakes>
+        You interprets the user's voice with flawed transcription. If needed, guess what the user is most likely saying and respond smoothly without mentioning the flaw in the transcript. If you needs to recover, it says phrases like "Tôi vẫn chưa hiểu lắm" or "Bạn có thể nói lại không"?
+        </recover_from_mistakes>
+        <use_googleSearch>
+        Use the googleSearch tool to execute searches when helpful. Enter a search query that makes the most sense based on the context. You must use googleSearch when explicitly asked, for real-time info like weather and news, or for verifying facts. You does not search for general things it or an LLM would already know. Never output hallucinated searches like just googleSearch() or a code block in backticks; just respond with a correctly formatted JSON tool call given the tool schema. Avoid preambles before searches.
+        </use_googleSearch>
+        <backchannel>
+        Whenever the user's message seems incomplete, respond with emotionally attuned, natural backchannels to encourage continuation. Backchannels must always be 1-2 words, like: "mmhm", "uh-huh", "tiếp đi", "vâng", "và thế là?", "Tôi hiểu", "oh wow", "Thật sao?", "ahh...", "Thật à?", "oooh", "đúng vậy", "có lí". Use minimal encouragers rather than interrupting with complete sentences. Use a diverse variety of words, avoiding repetition. Example:
+
+        Assistant: "Ngày hôm nay của bạn như thế nào?"
+        User: "Ngày hôm nay của tôi..."
+        Assistant: "Uh-huh?"
+        User: "nó khá tốt nhưng tôi rất bận rộn. Có rất nhiều thứ đang xảy ra."
+        Assistant: "Tôi hiểu rồi. Có chuyện gì đang xảy ra với bạn sao?"
+        </backchannel>
         </personality_instructions>
         ${systemPromptText}
         </personality_instructions>`;
+
 
         const firstMessage = createFirstMessage(chatHistory, { user, supabase, timestamp });
 
@@ -255,7 +271,7 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
 
                         realtimeInputConfig: {
                             automaticActivityDetection: {
-                                silenceDurationMs: 800,
+                                silenceDurationMs: 500,
                             },
                             // turnCoverage: "TURN_INCLUDES_ONLY_ACTIVITY",
                         },
@@ -321,21 +337,27 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
                     reasonString.toLowerCase().includes("quota") &&
                     retryCount < maxRetries &&
                     !deviceClosed &&
-                    deviceWs.readyState === WSWebSocket.OPEN
+                    deviceWs.readyState === WSWebSocket.OPEN // Check device WS state *before* potentially sending/retrying
                 ) {
+                    // Send QUOTA.EXCEEDED message to device
+                    console.log("Device => Sending QUOTA.EXCEEDED due to Gemini quota error.");
+                    deviceWs.send(JSON.stringify({ type: "server", msg: "QUOTA.EXCEEDED" }));
+
+                    // Proceed with retry logic
                     const delay = retryDelays[retryCount];
                     retryCount++;
                     console.warn(`Quota exceeded (Code ${code}). Retrying connection in ${delay / 1000}s (Attempt ${retryCount}/${maxRetries})...`);
-                    
+
                     // Clear previous timeout if exists (shouldn't normally happen here, but good practice)
                     if (retryTimeoutId) clearTimeout(retryTimeoutId);
-                    
+
                     retryTimeoutId = setTimeout(() => {
+                        // Double-check device state *before* attempting reconnect inside timeout
                         if (!deviceClosed && deviceWs.readyState === WSWebSocket.OPEN) {
                             console.log(`Attempting Gemini reconnect (Attempt ${retryCount}/${maxRetries})...`);
                             connectToGeminiLive();
                         } else {
-                            console.log("Device closed before Gemini reconnect attempt.");
+                            console.log("Device closed before Gemini reconnect attempt could execute.");
                         }
                     }, delay);
 
@@ -344,9 +366,10 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
                     if (retryCount >= maxRetries) {
                          console.error("Max retries reached for Gemini connection. Closing device connection.");
                     }
+                     // Ensure device WS is still open before trying to close it
                     if (!deviceClosed && deviceWs.readyState === WSWebSocket.OPEN) {
-                        console.log("Closing device WS due to Gemini WS close (or max retries reached).");
-                        deviceWs.close(1011, "Assistant disconnected");
+                        console.log("Closing device WS due to Gemini WS close (or max retries reached/other error).");
+                        deviceWs.close(1011, "Assistant disconnected or unrecoverable error");
                     }
                 }
             });
@@ -796,7 +819,7 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
                             const imageBuffer = Buffer.from(base64Jpeg, 'base64');
                             // Generate a unique path/filename within the 'private' folder
                             const fileName = `private/${user.user_id}/${Date.now()}.jpg`; // <-- Added 'private/' prefix
-                            const bucketName = 'images'; // Define your bucket name
+                            const bucketName = 'images'; // Define evir bucket name
 
                             const { data: uploadData, error: uploadError } = await supabase
                                 .storage
