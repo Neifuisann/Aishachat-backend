@@ -248,7 +248,7 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
 
                 const setupMsg = {
                     setup: {
-                        model: "models/gemini-2.0-flash-live-001",
+                        model: "models/gemini-2.5-flash-preview-native-audio-dialog",
                         generationConfig: {
                             responseModalities: ["AUDIO"],
                             speechConfig: {

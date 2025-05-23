@@ -35,7 +35,7 @@ if (!GEMINI_API_KEY) {
 const GEMINI_LIVE_URL_TEMPLATE =
   "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key={api_key}";
 
-const GEMINI_VISION_MODEL = Deno.env.get("GEMINI_VISION_MODEL") || "gemini-2.5-flash-preview-04-17"; // Use latest flash or a specific preview
+const GEMINI_VISION_MODEL = Deno.env.get("GEMINI_VISION_MODEL") || "gemini-2.5-flash-preview-05-20"; // Use latest flash or a specific preview
 const GEMINI_VISION_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_VISION_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
 
 // Microphone Processing 
