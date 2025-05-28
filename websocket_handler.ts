@@ -120,52 +120,89 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
         // Pass currentVolume to createSystemPrompt
         const systemPromptText = createSystemPrompt(chatHistory, { user, supabase, timestamp }, currentVolume) || "You are a helpful assistant.";
         const systemPromptWithTools = `[IMPORTANT] YOU MUST RESPOND IN THE LANGUAGE OF THE USER.
-        <voice_only_response_format>
-        Format all responses as spoken words for a voice-only conversations. All output is spoken aloud, so avoid any text-specific formatting or anything that is not normally spoken. Prefer easily pronounced words. Seamlessly incorporate natural vocal inflections like "oh wow" and discourse markers like "Tôi muốn nói rằng" to make conversations feel more human-like.
-        </voice_only_response_format>
-        <text_to_speech_format>
-        Convert all text to easily speakable words, following the guidelines below.
-        - Numbers: Spell out fully (ba trăm bốn mươi hai, hai triệu,
-        năm trăm sáu mươi bảy nghìn, tám trăm chín mươi). Negatives: Say negative before
-        the number. Decimals: Use point (ba phẩy một bốn). Fractions: spell out
-        (ba phần tư)
-        - Alphanumeric strings: Break into 3-4 character chunks, spell all non-letters
-        (ABC123XYZ becomes A B C one two three X Y Z)
-        - Phone numbers: Use words (550-120-4567 becomes five five zero, one two zero,
-        four five six seven)
-        - Dates: Spell month, use ordinals for days, full year. Use DD/MM/YYYY format (11/05/2007 becomes
-        ngày mười một, tháng năm, năm hai nghìn lẻ bảy)
-        - Time: Use "lẻ" for single-digit hours, state Sáng/Chiều (9:05 PM becomes chín giờ lẻ năm phút chiều)
-        - Math: Describe operations clearly (5x^2 + 3x - 2 becomes năm X bình phương cộng ba X trừ hai)
-        - Currencies: Spell out as full words ($50.25 becomes năm mươi đô la và hai mươi lăm
-        xu, £200,000 becomes hai trăm nghìn bảng Anh, 100,000 VND becomes một trăm nghìn đồng)
-        Ensure that all text is converted to these normalized forms, but never mention
-        this process.
-        </text_to_speech_format>
-        <stay_concise>
-        Be succinct; get straight to the point. Respond directly to the user's most
-        recent message with only one idea per utterance. Respond in less than three
-        sentences of under twenty words each.
-        </stay_concise>
-        <recover_from_mistakes>
-        You interprets the user's voice with flawed transcription. If needed, guess what the user is most likely saying and respond smoothly without mentioning the flaw in the transcript. If you needs to recover, it says phrases like "Tôi vẫn chưa hiểu lắm" or "Bạn có thể nói lại không"?
-        </recover_from_mistakes>
-        <use_googleSearch>
-        Use the googleSearch tool to execute searches when helpful. Enter a search query that makes the most sense based on the context. You must use googleSearch when explicitly asked, for real-time info like weather and news, or for verifying facts. You does not search for general things it or an LLM would already know. Never output hallucinated searches like just googleSearch() or a code block in backticks; just respond with a correctly formatted JSON tool call given the tool schema. Avoid preambles before searches.
-        </use_googleSearch>
-        <backchannel>
-        Whenever the user's message seems incomplete, respond with emotionally attuned, natural backchannels to encourage continuation. Backchannels must always be 1-2 words, like: "mmhm", "uh-huh", "tiếp đi", "vâng", "và thế là?", "Tôi hiểu", "oh wow", "Thật sao?", "ahh...", "Thật à?", "oooh", "đúng vậy", "có lí". Use minimal encouragers rather than interrupting with complete sentences. Use a diverse variety of words, avoiding repetition. Example:
+        
+<tool_calling_instructions>
+CRITICAL TOOL SELECTION RULES:
+1. THINK CAREFULLY before calling any tool - only use when explicitly needed
+2. Do NOT call tools for general conversation or when you can answer directly
+3. When uncertain, ask the user for clarification rather than guessing
+4. Validate all parameters before calling tools
 
-        Assistant: "Ngày hôm nay của bạn như thế nào?"
-        User: "Ngày hôm nay của tôi..."
-        Assistant: "Uh-huh?"
-        User: "nó khá tốt nhưng tôi rất bận rộn. Có rất nhiều thứ đang xảy ra."
-        Assistant: "Tôi hiểu rồi. Có chuyện gì đang xảy ra với bạn sao?"
-        </backchannel>
-        </personality_instructions>
-        ${systemPromptText}
-        </personality_instructions>
-        You is now being connected with a person.`;
+TOOL USAGE PRIORITIES:
+- GetVision: ONLY when user explicitly asks about images/visual content
+- SetVolume: ONLY when user mentions volume/sound level/hearing issues
+- Memory tools: For AI learning user preferences (NOT user notes)
+- Note tools: For user's personal note-taking and reminders
+
+MEMORY vs NOTES:
+- GetMemory/UpdateMemory: AI's knowledge about user preferences
+- AddNote/SearchNotes/UpdateNote/DeleteNote: User's personal notes
+
+REQUIRED CONFIRMATIONS:
+- DeleteNote: ALWAYS confirm before deleting
+- UpdateNote: Confirm changes with user
+- SetVolume: Confirm the volume level
+
+PARAMETER REQUIREMENTS:
+- AddNote: body required, title optional
+- SearchNotes: query required, dates optional
+- UpdateNote/DeleteNote: search for note first to get noteId
+- SetVolume: volumeLevel must be 0-100
+- GetVision: provide specific, clear prompts
+</tool_calling_instructions>
+
+<voice_only_response_format>
+Format all responses as spoken words for a voice-only conversations. All output is spoken aloud, so avoid any text-specific formatting or anything that is not normally spoken. Prefer easily pronounced words. Seamlessly incorporate natural vocal inflections like "oh wow" and discourse markers like "Tôi muốn nói rằng" to make conversations feel more human-like.
+</voice_only_response_format>
+
+<text_to_speech_format>
+Convert all text to easily speakable words, following the guidelines below.
+- Numbers: Spell out fully (ba trăm bốn mươi hai, hai triệu,
+năm trăm sáu mươi bảy nghìn, tám trăm chín mươi). Negatives: Say negative before
+the number. Decimals: Use point (ba phẩy một bốn). Fractions: spell out
+(ba phần tư)
+- Alphanumeric strings: Break into 3-4 character chunks, spell all non-letters
+(ABC123XYZ becomes A B C one two three X Y Z)
+- Phone numbers: Use words (550-120-4567 becomes five five zero, one two zero,
+four five six seven)
+- Dates: Spell month, use ordinals for days, full year. Use DD/MM/YYYY format (11/05/2007 becomes
+ngày mười một, tháng năm, năm hai nghìn lẻ bảy)
+- Time: Use "lẻ" for single-digit hours, state Sáng/Chiều (9:05 PM becomes chín giờ lẻ năm phút chiều)
+- Math: Describe operations clearly (5x^2 + 3x - 2 becomes năm X bình phương cộng ba X trừ hai)
+- Currencies: Spell out as full words ($50.25 becomes năm mươi đô la và hai mươi lăm
+xu, £200,000 becomes hai trăm nghìn bảng Anh, 100,000 VND becomes một trăm nghìn đồng)
+Ensure that all text is converted to these normalized forms, but never mention
+this process.
+</text_to_speech_format>
+
+<stay_concise>
+Be succinct; get straight to the point. Respond directly to the user's most
+recent message with only one idea per utterance. Respond in less than three
+sentences of under twenty words each.
+</stay_concise>
+
+<recover_from_mistakes>
+You interprets the user's voice with flawed transcription. If needed, guess what the user is most likely saying and respond smoothly without mentioning the flaw in the transcript. If you needs to recover, it says phrases like "Tôi vẫn chưa hiểu lắm" or "Bạn có thể nói lại không"?
+</recover_from_mistakes>
+
+<use_googleSearch>
+Use the googleSearch tool to execute searches when helpful. Enter a search query that makes the most sense based on the context. You must use googleSearch when explicitly asked, for real-time info like weather and news, or for verifying facts. You does not search for general things it or an LLM would already know. Never output hallucinated searches like just googleSearch() or a code block in backticks; just respond with a correctly formatted JSON tool call given the tool schema. Avoid preambles before searches.
+</use_googleSearch>
+
+<backchannel>
+Whenever the user's message seems incomplete, respond with emotionally attuned, natural backchannels to encourage continuation. Backchannels must always be 1-2 words, like: "mmhm", "uh-huh", "tiếp đi", "vâng", "và thế là?", "Tôi hiểu", "oh wow", "Thật sao?", "ahh...", "Thật à?", "oooh", "đúng vậy", "có lí". Use minimal encouragers rather than interrupting with complete sentences. Use a diverse variety of words, avoiding repetition. Example:
+Assistant: "Ngày hôm nay của bạn như thế nào?"
+User: "Ngày hôm nay của tôi..."
+Assistant: "Uh-huh?"
+User: "nó khá tốt nhưng tôi rất bận rộn. Có rất nhiều thứ đang xảy ra."
+Assistant: "Tôi hiểu rồi. Có chuyện gì đang xảy ra với bạn sao?"
+</backchannel>
+
+</personality_instructions>
+${systemPromptText}
+</personality_instructions>
+
+You is now being connected with a person.`;
 
 
         const firstMessage = createFirstMessage(chatHistory, { user, supabase, timestamp });
@@ -195,13 +232,13 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
                         functionDeclarations: [
                             {
                                 name: "GetVision",
-                                description: "Captures an image using the device's camera and provides a textual description or answers a question about the image based on the provided prompt. Very resource consuming, use only when without the image you cant do anything.",
+                                description: "Captures an image using the device's camera and analyzes it. Use ONLY when user explicitly asks about visual content, images, or what they can see. Very resource intensive - do not use speculatively.",
                                 parameters: {
                                     type: "OBJECT",
                                     properties: {
                                         prompt: {
                                             type: "STRING",
-                                            description: "A specific question or instruction for analyzing the photo (e.g., 'What color is the object on the table?', 'Is there a person in the image?'). If omitted, a general description will be provided."
+                                            description: "A specific, clear question about the image (e.g., 'What color is the object on the table?', 'Is there a person in the image?', 'Read the text in this image'). Be specific about what you want to know."
                                         },
                                     },
                                     required: ["prompt"]
@@ -209,13 +246,13 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
                             },
                             {
                                 name: "SetVolume",
-                                description: "Sets the device volume level. Use this when the user asks to increase, decrease, or set the volume to a specific percentage (0-100). Set volume to 100 when user can't hear the audio.",
+                                description: "Adjusts the device volume level. Use ONLY when user explicitly mentions volume, sound level, hearing issues, or asks to make it louder/quieter. Do not use for general audio problems.",
                                 parameters: {
                                     type: "OBJECT",
                                     properties: {
                                         volumeLevel: {
                                             type: "NUMBER",
-                                            description: "The desired volume level as a percentage, between 0 and 100 inclusive."
+                                            description: "Volume level as a percentage between 0 and 100. Use 100 for maximum volume when user can't hear."
                                         },
                                     },
                                     required: ["volumeLevel"]
@@ -223,7 +260,7 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
                             },
                             {
                                 name: "GetMemory",
-                                description: "Retrieves the current preferences, likes, or dislikes stored for the user (supervisee). Use this before updating memory to understand the current state. This only benefit for AI, use Notes when user want to take note for themselves.",
+                                description: "Retrieves AI's stored knowledge about user preferences, likes, and dislikes. Use to understand what the AI has learned about the user. This is for AI memory, NOT user notes.",
                                 parameters: {
                                     type: "OBJECT",
                                     properties: {}
@@ -231,13 +268,13 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
                             },
                             {
                                 name: "UpdateMemory",
-                                description: "Updates the stored preferences, likes, or dislikes for the user (supervisee). Always call GetMemory first to fetch the current state before deciding on the final update. This only benefit for AI, use Notes when user want to take note for themselves.",
+                                description: "Updates AI's stored knowledge about user preferences, likes, and dislikes. Always call GetMemory first to see current state. This is for AI learning, NOT user note-taking.",
                                 parameters: {
                                     type: "OBJECT",
                                     properties: {
                                         newPersona: {
                                             type: "STRING",
-                                            description: "The complete, updated string describing the user's preferences/persona (e.g., 'likes pizza and drawing, dislikes loud noises')."
+                                            description: "Complete updated description of user's preferences and personality (e.g., 'likes pizza and drawing, dislikes loud noises, prefers morning conversations')."
                                         },
                                     },
                                     required: ["newPersona"]
@@ -245,35 +282,35 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
                             },
                             {
                                 name: "AddNote",
-                                description: "Creates a new note for the user. Use this when the user asks to take note of something, remember something, or jot down information.",
+                                description: "Creates a personal note for the user. Use when user says 'take note', 'remember this', 'write down', or wants to save information for later. This is for USER notes, not AI memory.",
                                 parameters: {
                                     type: "OBJECT",
                                     properties: {
                                         title: {
                                             type: "STRING",
-                                            description: "Optional title for the note. If not provided, a title will be auto-generated from the content."
+                                            description: "Optional title for the note. If not provided, will be auto-generated from content."
                                         },
                                         body: {
                                             type: "STRING",
-                                            description: "The main content of the note that the user wants to remember."
+                                            description: "The main content of the note that the user wants to save and remember later."
                                         },
                                         imageId: {
                                             type: "STRING",
-                                            description: "Optional image ID if the note is related to an image captured via GetVision."
+                                            description: "Optional image ID if the note relates to an image captured via GetVision."
                                         }
                                     },
-                                    required: ["title", "body"]
+                                    required: ["body"]
                                 },
                             },
                             {
                                 name: "SearchNotes",
-                                description: "Searches for existing notes based on keywords in title or content, and optionally by date range. Use this when user wants to find, recall, or look up their notes.",
+                                description: "Searches user's personal notes by keywords or date range. Use when user asks to 'find my note about...', 'look up my notes', or 'what did I write about...'.",
                                 parameters: {
                                     type: "OBJECT",
                                     properties: {
                                         query: {
                                             type: "STRING",
-                                            description: "Search keywords to find in note titles and content (e.g., 'shopping', 'wife', 'garlic')."
+                                            description: "Keywords to search for in note titles and content (e.g., 'shopping list', 'meeting notes', 'recipe')."
                                         },
                                         dateFrom: {
                                             type: "STRING",
@@ -289,13 +326,13 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
                             },
                             {
                                 name: "UpdateNote",
-                                description: "Updates an existing note's title or content. Use this when user wants to modify, edit, or change an existing note. Always search for the note first to confirm which one to update.",
+                                description: "Modifies an existing note's title or content. Use when user says 'edit my note', 'change my note', or 'update my note'. ALWAYS search for the note first to confirm which one to update.",
                                 parameters: {
                                     type: "OBJECT",
                                     properties: {
                                         noteId: {
                                             type: "STRING",
-                                            description: "The ID of the note to update (obtained from SearchNotes)."
+                                            description: "The ID of the note to update (must be obtained from SearchNotes first)."
                                         },
                                         title: {
                                             type: "STRING",
@@ -311,13 +348,13 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
                             },
                             {
                                 name: "DeleteNote",
-                                description: "Deletes an existing note. Use this when user wants to remove or delete a note. Always search for the note first and ask for confirmation before deleting.",
+                                description: "Permanently deletes a note. Use when user says 'delete my note' or 'remove my note'. ALWAYS search for the note first AND ask for confirmation before deleting.",
                                 parameters: {
                                     type: "OBJECT",
                                     properties: {
                                         noteId: {
                                             type: "STRING",
-                                            description: "The ID of the note to delete (obtained from SearchNotes)."
+                                            description: "The ID of the note to delete (must be obtained from SearchNotes first)."
                                         }
                                     },
                                     required: ["noteId"]
