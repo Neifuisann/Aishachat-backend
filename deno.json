@@ -5,9 +5,6 @@
     "dev": "deno run --watch main.ts"
   },
   "compilerOptions": {
-    "types": [
-      "https://deno.land/x/deno/runtime/mod.ts"
-    ]
   },
   "nodeModulesDir": "auto",
   "fmt": {

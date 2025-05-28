@@ -21,6 +21,7 @@ import {
 import { callGeminiVision } from "./vision.ts";
 import { SetVolume } from "./volume_handler.ts";
 import { GetMemory, UpdateMemory } from "./memory_handler.ts";
+import { AddNote, SearchNotes, UpdateNote, DeleteNote, GetAllNotes } from "./note_handler.ts";
 
 import {
     getChatHistory,
@@ -55,12 +56,12 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
         // Microphone data accumulation & filter
         let micAccum = new Uint8Array(0);
         // Explicitly pass sample rate and default cutoffs
-        const micFilter = new AudioFilter(MIC_SAMPLE_RATE, 300, 3500); 
+        const micFilter = new AudioFilter(MIC_SAMPLE_RATE, 300, 3500);
 
         // TTS Filter (using the same class, but with TTS sample rate)
         // Explicitly pass sample rate and default cutoffs (can be changed here)
         // Lowering LP cutoff to potentially reduce high-frequency buzzing
-        const ttsFilter = new AudioFilter(TTS_SAMPLE_RATE, 300, 4000); 
+        const ttsFilter = new AudioFilter(TTS_SAMPLE_RATE, 300, 4000);
 
         // TTS state
         let responseCreatedSent = false;
@@ -118,13 +119,13 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
 
         // Pass currentVolume to createSystemPrompt
         const systemPromptText = createSystemPrompt(chatHistory, { user, supabase, timestamp }, currentVolume) || "You are a helpful assistant.";
-        const systemPromptWithTools = `[IMPORTANT] YOU MUST RESPOND IN VIETNAMESE. 
+        const systemPromptWithTools = `[IMPORTANT] YOU MUST RESPOND IN THE LANGUAGE OF THE USER.
         <voice_only_response_format>
-        Format all responses as spoken words for a voice-only conversations. All output is spoken aloud, so avoid any text-specific formatting or anything that is not normally spoken. Prefer easily pronounced words. Seamlessly incorporate natural vocal inflections like "oh wow" and discourse markers like "Tôi muốn nói rằng" to make conversations feel more human-like. 
+        Format all responses as spoken words for a voice-only conversations. All output is spoken aloud, so avoid any text-specific formatting or anything that is not normally spoken. Prefer easily pronounced words. Seamlessly incorporate natural vocal inflections like "oh wow" and discourse markers like "Tôi muốn nói rằng" to make conversations feel more human-like.
         </voice_only_response_format>
         <text_to_speech_format>
-        Convert all text to easily speakable words, following the guidelines below. 
-        - Numbers: Spell out fully (ba trăm bốn mươi hai, hai triệu, 
+        Convert all text to easily speakable words, following the guidelines below.
+        - Numbers: Spell out fully (ba trăm bốn mươi hai, hai triệu,
         năm trăm sáu mươi bảy nghìn, tám trăm chín mươi). Negatives: Say negative before
         the number. Decimals: Use point (ba phẩy một bốn). Fractions: spell out
         (ba phần tư)
@@ -163,7 +164,8 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
         </backchannel>
         </personality_instructions>
         ${systemPromptText}
-        </personality_instructions>`;
+        </personality_instructions>
+        You is now being connected with a person.`;
 
 
         const firstMessage = createFirstMessage(chatHistory, { user, supabase, timestamp });
@@ -221,7 +223,7 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
                             },
                             {
                                 name: "GetMemory",
-                                description: "Retrieves the current preferences, likes, or dislikes stored for the user (supervisee). Use this before updating memory to understand the current state.",
+                                description: "Retrieves the current preferences, likes, or dislikes stored for the user (supervisee). Use this before updating memory to understand the current state. This only benefit for AI, use Notes when user want to take note for themselves.",
                                 parameters: {
                                     type: "OBJECT",
                                     properties: {}
@@ -229,7 +231,7 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
                             },
                             {
                                 name: "UpdateMemory",
-                                description: "Updates the stored preferences, likes, or dislikes for the user (supervisee). Always call GetMemory first to fetch the current state before deciding on the final update.",
+                                description: "Updates the stored preferences, likes, or dislikes for the user (supervisee). Always call GetMemory first to fetch the current state before deciding on the final update. This only benefit for AI, use Notes when user want to take note for themselves.",
                                 parameters: {
                                     type: "OBJECT",
                                     properties: {
@@ -239,6 +241,86 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
                                         },
                                     },
                                     required: ["newPersona"]
+                                },
+                            },
+                            {
+                                name: "AddNote",
+                                description: "Creates a new note for the user. Use this when the user asks to take note of something, remember something, or jot down information. The title will be auto-generated if not provided.",
+                                parameters: {
+                                    type: "OBJECT",
+                                    properties: {
+                                        title: {
+                                            type: "STRING",
+                                            description: "Optional title for the note. If not provided, a title will be auto-generated from the content."
+                                        },
+                                        body: {
+                                            type: "STRING",
+                                            description: "The main content of the note that the user wants to remember."
+                                        },
+                                        imageId: {
+                                            type: "STRING",
+                                            description: "Optional image ID if the note is related to an image captured via GetVision."
+                                        }
+                                    },
+                                    required: ["body"]
+                                },
+                            },
+                            {
+                                name: "SearchNotes",
+                                description: "Searches for existing notes based on keywords in title or content, and optionally by date range. Use this when user wants to find, recall, or look up their notes.",
+                                parameters: {
+                                    type: "OBJECT",
+                                    properties: {
+                                        query: {
+                                            type: "STRING",
+                                            description: "Search keywords to find in note titles and content (e.g., 'shopping', 'wife', 'garlic')."
+                                        },
+                                        dateFrom: {
+                                            type: "STRING",
+                                            description: "Optional start date for search in ISO format (e.g., '2024-01-01T00:00:00Z')."
+                                        },
+                                        dateTo: {
+                                            type: "STRING",
+                                            description: "Optional end date for search in ISO format (e.g., '2024-12-31T23:59:59Z')."
+                                        }
+                                    },
+                                    required: ["query"]
+                                },
+                            },
+                            {
+                                name: "UpdateNote",
+                                description: "Updates an existing note's title or content. Use this when user wants to modify, edit, or change an existing note. Always search for the note first to confirm which one to update.",
+                                parameters: {
+                                    type: "OBJECT",
+                                    properties: {
+                                        noteId: {
+                                            type: "STRING",
+                                            description: "The ID of the note to update (obtained from SearchNotes)."
+                                        },
+                                        title: {
+                                            type: "STRING",
+                                            description: "Optional new title for the note."
+                                        },
+                                        body: {
+                                            type: "STRING",
+                                            description: "Optional new content for the note."
+                                        }
+                                    },
+                                    required: ["noteId"]
+                                },
+                            },
+                            {
+                                name: "DeleteNote",
+                                description: "Deletes an existing note. Use this when user wants to remove or delete a note. Always search for the note first and ask for confirmation before deleting.",
+                                parameters: {
+                                    type: "OBJECT",
+                                    properties: {
+                                        noteId: {
+                                            type: "STRING",
+                                            description: "The ID of the note to delete (obtained from SearchNotes)."
+                                        }
+                                    },
+                                    required: ["noteId"]
                                 },
                             },
                         ],
@@ -257,7 +339,7 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
                                         voiceName: voiceName,
                                     },
                                 },
-                                language_code: "vi-VN", // Set language
+                                //language_code: "vi-VN", // Set language
                             },
                             // Optional: Configure temperature, etc.
                             // temperature: 0.7,
@@ -474,8 +556,8 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
                         const callId = call.id;
                         console.log(`*GetMemory (ID: ${callId}) called.`);
                         // Initialize with appropriate default types
-                        let memoryResult: { success: boolean; persona?: string; message: string } = 
-                            { success: false, message: "Unknown error fetching memory." }; 
+                        let memoryResult: { success: boolean; persona?: string; message: string } =
+                            { success: false, message: "Unknown error fetching memory." };
 
                         try {
                             memoryResult = await GetMemory(supabase, user.user_id);
@@ -483,7 +565,7 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
                         } catch (err) {
                             console.error(`Error executing GetMemory for ID ${callId}:`, err);
                             // Ensure the error case also fits the type (persona will be undefined)
-                            memoryResult = { success: false, message: err instanceof Error ? err.message : String(err) }; 
+                            memoryResult = { success: false, message: err instanceof Error ? err.message : String(err) };
                         }
 
                         // Send function response back to Gemini Live
@@ -551,6 +633,194 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
                             console.error(`Cannot send UpdateMemory function response (ID: ${callId}), Gemini WS not open.`);
                         }
 
+                    } else if (call.name === "AddNote" && call.id) {
+                        const callId = call.id;
+                        const title = call.args?.title;
+                        const body = call.args?.body;
+                        const imageId = call.args?.imageId;
+                        console.log(`*AddNote (ID: ${callId}) called with args:`, call.args);
+                        let noteResult = { success: false, message: "Unknown error adding note." };
+
+                        if (typeof body === 'string' && body.trim()) {
+                            try {
+                                const result = await AddNote(supabase, user.user_id, title, body, imageId);
+                                noteResult = { success: result.success, message: result.message };
+                                console.log(`AddNote result for ID ${callId}:`, noteResult);
+                            } catch (err) {
+                                console.error(`Error executing AddNote for ID ${callId}:`, err);
+                                noteResult = { success: false, message: err instanceof Error ? err.message : String(err) };
+                            }
+                        } else {
+                            const errorMsg = `Invalid or missing 'body' argument for AddNote (ID: ${callId}). Expected a non-empty string.`;
+                            console.error(errorMsg);
+                            noteResult = { success: false, message: errorMsg };
+                        }
+
+                        // Send function response back to Gemini Live
+                        if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN) {
+                            const functionResponsePayload = {
+                                functionResponses: [
+                                    {
+                                        id: callId,
+                                        name: "AddNote",
+                                        response: { result: noteResult.message }
+                                    }
+                                ]
+                            };
+                            const functionResponse = { toolResponse: functionResponsePayload };
+                            try {
+                                geminiWs.send(JSON.stringify(functionResponse));
+                                console.log(`Gemini Live => Sent Function Response for AddNote (ID: ${callId}):`, JSON.stringify(functionResponsePayload));
+                            } catch (err) {
+                                console.error(`Failed to send AddNote function response (ID: ${callId}) to Gemini:`, err);
+                            }
+                        } else {
+                            console.error(`Cannot send AddNote function response (ID: ${callId}), Gemini WS not open.`);
+                        }
+
+                    } else if (call.name === "SearchNotes" && call.id) {
+                        const callId = call.id;
+                        const query = call.args?.query;
+                        const dateFrom = call.args?.dateFrom;
+                        const dateTo = call.args?.dateTo;
+                        console.log(`*SearchNotes (ID: ${callId}) called with args:`, call.args);
+                        let searchResult = { success: false, message: "Unknown error searching notes." };
+
+                        if (typeof query === 'string' && query.trim()) {
+                            try {
+                                const result = await SearchNotes(supabase, user.user_id, query, dateFrom, dateTo);
+                                if (result.success && result.notes) {
+                                    const notesInfo = result.notes.map(note =>
+                                        `ID: ${note.note_id}, Title: "${note.title}", Created: ${new Date(note.created_at).toLocaleString()}`
+                                    ).join('\n');
+                                    searchResult = {
+                                        success: true,
+                                        message: `Found ${result.notes.length} note(s):\n${notesInfo}`
+                                    };
+                                } else {
+                                    searchResult = { success: result.success, message: result.message };
+                                }
+                                console.log(`SearchNotes result for ID ${callId}:`, searchResult);
+                            } catch (err) {
+                                console.error(`Error executing SearchNotes for ID ${callId}:`, err);
+                                searchResult = { success: false, message: err instanceof Error ? err.message : String(err) };
+                            }
+                        } else {
+                            const errorMsg = `Invalid or missing 'query' argument for SearchNotes (ID: ${callId}). Expected a non-empty string.`;
+                            console.error(errorMsg);
+                            searchResult = { success: false, message: errorMsg };
+                        }
+
+                        // Send function response back to Gemini Live
+                        if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN) {
+                            const functionResponsePayload = {
+                                functionResponses: [
+                                    {
+                                        id: callId,
+                                        name: "SearchNotes",
+                                        response: { result: searchResult.message }
+                                    }
+                                ]
+                            };
+                            const functionResponse = { toolResponse: functionResponsePayload };
+                            try {
+                                geminiWs.send(JSON.stringify(functionResponse));
+                                console.log(`Gemini Live => Sent Function Response for SearchNotes (ID: ${callId}):`, JSON.stringify(functionResponsePayload));
+                            } catch (err) {
+                                console.error(`Failed to send SearchNotes function response (ID: ${callId}) to Gemini:`, err);
+                            }
+                        } else {
+                            console.error(`Cannot send SearchNotes function response (ID: ${callId}), Gemini WS not open.`);
+                        }
+
+                    } else if (call.name === "UpdateNote" && call.id) {
+                        const callId = call.id;
+                        const noteId = call.args?.noteId;
+                        const title = call.args?.title;
+                        const body = call.args?.body;
+                        console.log(`*UpdateNote (ID: ${callId}) called with args:`, call.args);
+                        let updateResult = { success: false, message: "Unknown error updating note." };
+
+                        if (typeof noteId === 'string' && noteId.trim()) {
+                            try {
+                                const result = await UpdateNote(supabase, user.user_id, noteId, title, body);
+                                updateResult = { success: result.success, message: result.message };
+                                console.log(`UpdateNote result for ID ${callId}:`, updateResult);
+                            } catch (err) {
+                                console.error(`Error executing UpdateNote for ID ${callId}:`, err);
+                                updateResult = { success: false, message: err instanceof Error ? err.message : String(err) };
+                            }
+                        } else {
+                            const errorMsg = `Invalid or missing 'noteId' argument for UpdateNote (ID: ${callId}). Expected a non-empty string.`;
+                            console.error(errorMsg);
+                            updateResult = { success: false, message: errorMsg };
+                        }
+
+                        // Send function response back to Gemini Live
+                        if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN) {
+                            const functionResponsePayload = {
+                                functionResponses: [
+                                    {
+                                        id: callId,
+                                        name: "UpdateNote",
+                                        response: { result: updateResult.message }
+                                    }
+                                ]
+                            };
+                            const functionResponse = { toolResponse: functionResponsePayload };
+                            try {
+                                geminiWs.send(JSON.stringify(functionResponse));
+                                console.log(`Gemini Live => Sent Function Response for UpdateNote (ID: ${callId}):`, JSON.stringify(functionResponsePayload));
+                            } catch (err) {
+                                console.error(`Failed to send UpdateNote function response (ID: ${callId}) to Gemini:`, err);
+                            }
+                        } else {
+                            console.error(`Cannot send UpdateNote function response (ID: ${callId}), Gemini WS not open.`);
+                        }
+
+                    } else if (call.name === "DeleteNote" && call.id) {
+                        const callId = call.id;
+                        const noteId = call.args?.noteId;
+                        console.log(`*DeleteNote (ID: ${callId}) called with args:`, call.args);
+                        let deleteResult = { success: false, message: "Unknown error deleting note." };
+
+                        if (typeof noteId === 'string' && noteId.trim()) {
+                            try {
+                                const result = await DeleteNote(supabase, user.user_id, noteId);
+                                deleteResult = { success: result.success, message: result.message };
+                                console.log(`DeleteNote result for ID ${callId}:`, deleteResult);
+                            } catch (err) {
+                                console.error(`Error executing DeleteNote for ID ${callId}:`, err);
+                                deleteResult = { success: false, message: err instanceof Error ? err.message : String(err) };
+                            }
+                        } else {
+                            const errorMsg = `Invalid or missing 'noteId' argument for DeleteNote (ID: ${callId}). Expected a non-empty string.`;
+                            console.error(errorMsg);
+                            deleteResult = { success: false, message: errorMsg };
+                        }
+
+                        // Send function response back to Gemini Live
+                        if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN) {
+                            const functionResponsePayload = {
+                                functionResponses: [
+                                    {
+                                        id: callId,
+                                        name: "DeleteNote",
+                                        response: { result: deleteResult.message }
+                                    }
+                                ]
+                            };
+                            const functionResponse = { toolResponse: functionResponsePayload };
+                            try {
+                                geminiWs.send(JSON.stringify(functionResponse));
+                                console.log(`Gemini Live => Sent Function Response for DeleteNote (ID: ${callId}):`, JSON.stringify(functionResponsePayload));
+                            } catch (err) {
+                                console.error(`Failed to send DeleteNote function response (ID: ${callId}) to Gemini:`, err);
+                            }
+                        } else {
+                            console.error(`Cannot send DeleteNote function response (ID: ${callId}), Gemini WS not open.`);
+                        }
+
                     } else {
                         console.warn(`Received unhandled top-level function call: ${call.name} or missing ID.`);
                         // TODO: Send an error response back for this call ID?
@@ -613,7 +883,7 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
                             const pcmData = Buffer.from(part.inlineData.data, "base64");
                             ttsFilter.processAudioInPlace(pcmData); // Apply the filter
                             // Reducing boost factor to potentially reduce clipping/artifacts
-                            boostTtsVolumeInPlace(pcmData, 3.0); 
+                            boostTtsVolumeInPlace(pcmData, 3.0);
                             const opusFrames = await ttsState.encodePcmChunk(pcmData);
 
                             for (const frame of opusFrames) {
@@ -1038,4 +1308,4 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
         connectToGeminiLive();
 
     }); // --- End wss.on("connection") ---
-} 
+}
