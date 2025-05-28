@@ -245,7 +245,7 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
                             },
                             {
                                 name: "AddNote",
-                                description: "Creates a new note for the user. Use this when the user asks to take note of something, remember something, or jot down information. The title will be auto-generated if not provided.",
+                                description: "Creates a new note for the user. Use this when the user asks to take note of something, remember something, or jot down information.",
                                 parameters: {
                                     type: "OBJECT",
                                     properties: {
@@ -262,7 +262,7 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
                                             description: "Optional image ID if the note is related to an image captured via GetVision."
                                         }
                                     },
-                                    required: ["body"]
+                                    required: ["title", "body"]
                                 },
                             },
                             {
