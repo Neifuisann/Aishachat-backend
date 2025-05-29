@@ -4,7 +4,7 @@ import type { RawData, WebSocketServer as _WSS } from "npm:ws";
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 
 import {
-    GEMINI_API_KEY,
+    apiKeyManager,
     GEMINI_LIVE_URL_TEMPLATE,
     MIC_SAMPLE_RATE,
     MIC_ACCUM_CHUNK_SIZE,
@@ -22,6 +22,7 @@ import { callGeminiVision } from "./vision.ts";
 import { SetVolume } from "./volume_handler.ts";
 import { GetMemory, UpdateMemory } from "./memory_handler.ts";
 import { AddNote, SearchNotes, UpdateNote, DeleteNote, GetAllNotes } from "./note_handler.ts";
+import { rotateImage180, isValidJpegBase64 } from "./image_utils.ts";
 
 import {
     getChatHistory,
@@ -120,7 +121,7 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
         // Pass currentVolume to createSystemPrompt
         const systemPromptText = createSystemPrompt(chatHistory, { user, supabase, timestamp }, currentVolume) || "You are a helpful assistant.";
         const systemPromptWithTools = `[IMPORTANT] YOU MUST RESPOND IN THE LANGUAGE OF THE USER.
-        
+
 <tool_calling_instructions>
 CRITICAL TOOL SELECTION RULES:
 1. THINK CAREFULLY before calling any tool - only use when explicitly needed
@@ -209,7 +210,8 @@ You is now being connected with a person.`;
 
         // Connect to Gemini Live (incorporating function tools)
         function connectToGeminiLive() {
-            if (!GEMINI_API_KEY) {
+            const currentKey = apiKeyManager.getCurrentKey();
+            if (!currentKey) {
                 console.error("Cannot connect to Gemini: Missing API Key.");
                 if (deviceWs.readyState === WSWebSocket.OPEN) deviceWs.close(1011, "Server Configuration Error: Missing API Key");
                 return;
@@ -217,8 +219,8 @@ You is now being connected with a person.`;
             const voiceName = user.personality?.oai_voice || "Leda"; // Default voice
             console.log(`Using TTS voice: ${voiceName}`);
 
-            const gemUrl = GEMINI_LIVE_URL_TEMPLATE.replace("{api_key}", GEMINI_API_KEY);
-            console.log("Attempting to connect to Gemini Live");
+            const gemUrl = GEMINI_LIVE_URL_TEMPLATE.replace("{api_key}", currentKey);
+            console.log(`Attempting to connect to Gemini Live with API key ${apiKeyManager.getCurrentKey() === apiKeyManager.getCurrentKey() ? 'current' : 'rotated'}`);
 
             geminiWs = new WSWebSocket(gemUrl);
 
@@ -417,7 +419,7 @@ You is now being connected with a person.`;
                     } else if (!chatHistory || chatHistory.length === 0) {
                         console.log("No chat history, sending 'Xin chào' as initial turn.");
                         const userTurn = {
-                            clientContent: { turns: [{ role: "user", parts: [{ text: "Xin chào" }] }], turnComplete: true }
+                            clientContent: { turns: [{ role: "user", parts: [{ text: "Xin chào!" }] }], turnComplete: true }
                         };
                         geminiWs?.send(JSON.stringify(userTurn));
                         initialUserContentSent = true;
@@ -454,7 +456,6 @@ You is now being connected with a person.`;
                 if (
                     code === 1011 &&
                     reasonString.toLowerCase().includes("quota") &&
-                    retryCount < maxRetries &&
                     !deviceClosed &&
                     deviceWs.readyState === WSWebSocket.OPEN // Check device WS state *before* potentially sending/retrying
                 ) {
@@ -462,26 +463,45 @@ You is now being connected with a person.`;
                     console.log("Device => Sending QUOTA.EXCEEDED due to Gemini quota error.");
                     deviceWs.send(JSON.stringify({ type: "server", msg: "QUOTA.EXCEEDED" }));
 
-                    // Proceed with retry logic
-                    const delay = retryDelays[retryCount];
-                    retryCount++;
-                    console.warn(`Quota exceeded (Code ${code}). Retrying connection in ${delay / 1000}s (Attempt ${retryCount}/${maxRetries})...`);
+                    // Try to rotate to next API key
+                    const rotatedSuccessfully = apiKeyManager.rotateToNextKey();
 
-                    // Clear previous timeout if exists (shouldn't normally happen here, but good practice)
-                    if (retryTimeoutId) clearTimeout(retryTimeoutId);
+                    if (rotatedSuccessfully) {
+                        // Immediately try with the next key
+                        console.log(`Quota exceeded. Rotating to next API key and retrying immediately...`);
+                        connectToGeminiLive();
+                    } else {
+                        // All keys exhausted, use retry delays
+                        if (retryCount < maxRetries) {
+                            const delay = retryDelays[retryCount];
+                            retryCount++;
+                            console.warn(`All API keys exhausted. Retrying with delays in ${delay / 1000}s (Attempt ${retryCount}/${maxRetries})...`);
 
-                    retryTimeoutId = setTimeout(() => {
-                        // Double-check device state *before* attempting reconnect inside timeout
-                        if (!deviceClosed && deviceWs.readyState === WSWebSocket.OPEN) {
-                            console.log(`Attempting Gemini reconnect (Attempt ${retryCount}/${maxRetries})...`);
-                            connectToGeminiLive();
+                            // Clear previous timeout if exists
+                            if (retryTimeoutId) clearTimeout(retryTimeoutId);
+
+                            retryTimeoutId = setTimeout(() => {
+                                // Reset key rotation for new retry cycle
+                                apiKeyManager.resetRotation();
+
+                                // Double-check device state *before* attempting reconnect inside timeout
+                                if (!deviceClosed && deviceWs.readyState === WSWebSocket.OPEN) {
+                                    console.log(`Attempting Gemini reconnect with reset keys (Attempt ${retryCount}/${maxRetries})...`);
+                                    connectToGeminiLive();
+                                } else {
+                                    console.log("Device closed before Gemini reconnect attempt could execute.");
+                                }
+                            }, delay);
                         } else {
-                            console.log("Device closed before Gemini reconnect attempt could execute.");
+                            console.error("Max retries reached for Gemini connection. Closing device connection.");
+                            if (deviceWs.readyState === WSWebSocket.OPEN) {
+                                deviceWs.close(1011, "Assistant disconnected - all API keys exhausted");
+                            }
                         }
-                    }, delay);
+                    }
 
                 } else {
-                     // If not retrying (different error, max retries reached, or device closed)
+                     // If not retrying (different error or device closed)
                     if (retryCount >= maxRetries) {
                          console.error("Max retries reached for Gemini connection. Closing device connection.");
                     }
@@ -1119,11 +1139,28 @@ You is now being connected with a person.`;
                         let visionResult = "";
                         let storagePath: string | null = null;
 
+                        // --- START: Rotate Image 180 degrees ---
+                        let processedBase64Jpeg = base64Jpeg;
+                        try {
+                            console.log(`Device => Rotating image 180 degrees to correct ESP32 upside-down orientation...`);
+                            if (isValidJpegBase64(base64Jpeg)) {
+                                processedBase64Jpeg = await rotateImage180(base64Jpeg);
+                                console.log(`Device => Image rotation completed successfully.`);
+                            } else {
+                                console.warn(`Device => Invalid JPEG format detected, skipping rotation.`);
+                            }
+                        } catch (rotationErr) {
+                            console.error("Error rotating image:", rotationErr);
+                            console.warn("Using original image without rotation.");
+                            processedBase64Jpeg = base64Jpeg; // Fallback to original
+                        }
+                        // --- END: Rotate Image 180 degrees ---
+
                         // --- START: Upload to Supabase Storage ---
                         try {
-                            console.log(`Device => Received image data (${Math.round(base64Jpeg.length * 3 / 4 / 1024)} KB), attempting upload...`);
+                            console.log(`Device => Received image data (${Math.round(processedBase64Jpeg.length * 3 / 4 / 1024)} KB), attempting upload...`);
                             // Decode Base64 to Buffer for upload
-                            const imageBuffer = Buffer.from(base64Jpeg, 'base64');
+                            const imageBuffer = Buffer.from(processedBase64Jpeg, 'base64');
                             // Generate a unique path/filename within the 'private' folder
                             const fileName = `private/${user.user_id}/${Date.now()}.jpg`; // <-- Added 'private/' prefix
                             const bucketName = 'images'; // Define evir bucket name
@@ -1158,7 +1195,7 @@ You is now being connected with a person.`;
                         // (unless photoCaptureFailed was set due to missing initial data)
                         if (!photoCaptureFailed) {
                             console.log(`Calling Gemini Vision with prompt: "${pendingVisionCall.prompt}"`);
-                            visionResult = await callGeminiVision(base64Jpeg, pendingVisionCall.prompt);
+                            visionResult = await callGeminiVision(processedBase64Jpeg, pendingVisionCall.prompt);
                             console.log("Gemini Vision Result =>", visionResult);
                         } else {
                             // If upload failed

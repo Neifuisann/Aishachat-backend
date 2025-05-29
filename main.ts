@@ -1,4 +1,4 @@
-import "./config.ts"; 
+import "./config.ts";
 
 import { Buffer } from "node:buffer";
 import { createServer } from "node:http";
@@ -20,36 +20,19 @@ import {
   addConversation,
   getDeviceInfo,
   updateUserSessionTime,
-} from "./supabase.ts"; 
+} from "./supabase.ts";
 import { setupWebSocketConnectionHandler } from "./websocket_handler.ts";
 
-import { isDev, HOST, PORT } from "./config.ts"; 
+import {
+  isDev,
+  HOST,
+  PORT,
+  TTS_SAMPLE_RATE,
+  TTS_FRAME_SIZE_BYTES,
+  MIC_SAMPLE_RATE
+} from "./config.ts";
 
-// Environment variables
-const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY") || "";
-if (!GEMINI_API_KEY) {
-  console.error("Missing GEMINI_API_KEY! Please set it in env.");
-  Deno.exit(1);
-}
-
-const GEMINI_LIVE_URL_TEMPLATE =
-  "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key={api_key}";
-
-const GEMINI_VISION_MODEL = Deno.env.get("GEMINI_VISION_MODEL") || "gemini-2.5-flash-preview-05-20"; // Use latest flash or a specific preview
-const GEMINI_VISION_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_VISION_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
-
-// Microphone Processing 
-const MIC_SAMPLE_RATE = 16000;
-const MIC_SAMPLE_BITS = 16; // 16-bit
-const MIC_CHANNELS = 1;
-const MIC_ACCUM_CHUNK_SIZE = 1024; // Process audio in 1k blocks
-
-// TTS Output 
-const TTS_SAMPLE_RATE = 24000;
-const TTS_FRAME_SIZE_SAMPLES = 480; // 20ms at 24k
-const TTS_FRAME_SIZE_BYTES = TTS_FRAME_SIZE_SAMPLES * 2; // 960 bytes (16-bit)
-
-// Opus encoder for TTS 
+// Opus encoder for TTS
 const ttsEncoder = new Encoder({
   application: "audio",
   sample_rate: TTS_SAMPLE_RATE,
@@ -88,7 +71,7 @@ function createTtsBuffer() {
 }
 const ttsState = createTtsBuffer();
 
-// AudioFilter for Microphone Input 
+// AudioFilter for Microphone Input
 class AudioFilter {
   private highpassAlpha: number;
   private lowpassAlpha: number;
@@ -138,79 +121,7 @@ function boostTtsVolumeInPlace(buffer: Uint8Array, factor = 2.0) {
     }
 }
 
-async function callGeminiVision(base64Image: string, prompt: string): Promise<string> {
-  console.log("Calling Gemini Vision API");
-  if (!GEMINI_API_KEY) {
-      console.error("Cannot call Gemini Vision: Missing API Key.");
-      return "Error: Vision API Key not configured.";
-  }
-   if (!base64Image) {
-        console.error("Cannot call Gemini Vision: No image data provided.");
-        return "Error: No image data received.";
-    }
 
-  try {
-    const body = {
-      contents: [
-        {
-          parts: [
-            {
-              inline_data: {
-                mime_type: "image/jpeg", 
-                data: base64Image
-              }
-            },
-            {
-              text: prompt || "Describe this image in maximum 10 sentences." 
-            }
-          ]
-        }
-      ],
-      generationConfig: {
-        thinkingConfig: {
-              thinkingBudget: 0
-        }
-      }
-    };
-
-    const resp = await fetch(GEMINI_VISION_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-
-    const result = await resp.json();
-
-    if (!resp.ok || result?.error) {
-      console.error("Gemini Vision API error:", result?.error || `HTTP Status ${resp.status}`);
-      return `Error analyzing the image: ${result?.error?.message || resp.statusText}`;
-    }
-
-    // Extract text, handling potential variations in response structure
-     const candidates = result?.candidates;
-     if (!candidates || candidates.length === 0) {
-        console.error("Gemini Vision: No candidates returned.", result);
-        return "(No description returned from Vision API)";
-     }
-     const content = candidates[0]?.content;
-     if (!content || !content.parts || content.parts.length === 0) {
-        console.error("Gemini Vision: No content parts returned.", result);
-        return "(No description content returned from Vision API)";
-     }
-
-    const text = content.parts
-      ?.map((p: any) => p.text)
-      ?.filter(Boolean) // Filter out any null/undefined text parts
-      ?.join(" ") || "(No text description found)"; // Join with space, provide default
-
-    return text;
-
-  } catch (err) {
-    console.error("callGeminiVision fetch/processing error:", err);
-    const errorMessage = err instanceof Error ? err.message : String(err);
-    return `Error analyzing the image (Network/Processing failed: ${errorMessage}).`;
-  }
-}
 
 console.log("Initializing server...");
 
