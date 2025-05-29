@@ -10,7 +10,7 @@ async function testImageRotation() {
     console.log("🧪 Testing image rotation functionality...");
 
     // Create a simple test base64 JPEG (2x2 pixel test image)
-    // This is a minimal valid JPEG that should work with imagescript
+    // This is a minimal valid JPEG for testing rotation
     const testBase64Jpeg = "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/2wBDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAv/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwA/wA==";
 
     console.log("📝 Test 1: Validating JPEG format detection");
@@ -30,7 +30,7 @@ async function testImageRotation() {
             if (rotatedImage === testBase64Jpeg) {
                 console.log("   ⚠️  Note: Rotation failed, using original image (expected for test JPEG)");
             } else {
-                console.log("   🎉 Image was successfully rotated using imagescript!");
+                console.log("   🎉 Image was successfully rotated using Web APIs!");
             }
         } else {
             console.log(`   ❌ Image rotation: FAILED - No output received`);
