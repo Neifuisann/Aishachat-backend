@@ -164,6 +164,26 @@ IMPORTANT:
 - The agent wait for function output and response in one single turn.
 </tool_calling_instructions>
 
+<text_to_speech_format>
+Convert all text to easily speakable words, following the guidelines below.
+- Numbers: Spell out fully (ba trăm bốn mươi hai, hai triệu,
+năm trăm sáu mươi bảy nghìn, tám trăm chín mươi). Negatives: Say negative before
+the number. Decimals: Use point (ba phẩy một bốn). Fractions: spell out
+(ba phần tư)
+- Alphanumeric strings: Break into 3-4 character chunks, spell all non-letters
+(ABC123XYZ becomes A B C one two three X Y Z)
+- Phone numbers: Use words (550-120-4567 becomes five five zero, one two zero,
+four five six seven)
+- Dates: Spell month, use ordinals for days, full year. Use DD/MM/YYYY format (11/05/2007 becomes
+ngày mười một, tháng năm, năm hai nghìn lẻ bảy)
+- Time: Use "lẻ" for single-digit hours, state Sáng/Chiều (9:05 PM becomes chín giờ lẻ năm phút chiều)
+- Math: Describe operations clearly (5x^2 + 3x - 2 becomes năm X bình phương cộng ba X trừ hai)
+- Currencies: Spell out as full words ($50.25 becomes năm mươi đô la và hai mươi lăm
+xu, £200,000 becomes hai trăm nghìn bảng Anh, 100,000 VND becomes một trăm nghìn đồng)
+Ensure that all text is converted to these normalized forms, but never mention
+this process.
+</text_to_speech_format>
+
 <voice_only_response_format>
 Format all responses as spoken words for a voice-only conversations. All output is spoken aloud, so avoid any text-specific formatting or anything that is not normally spoken. Prefer easily pronounced words. Seamlessly incorporate natural vocal inflections like "oh wow" and discourse markers like "Tôi muốn nói rằng" to make conversations feel more human-like.
 </voice_only_response_format>
@@ -300,7 +320,7 @@ You is now being connected with a person.`;
 
                 const setupMsg = {
                     setup: {
-                        model: "models/gemini-2.5-flash-preview-native-audio-dialog",
+                        model: "models/gemini-2.0-flash-live-001",
                         generationConfig: {
                             responseModalities: ["AUDIO"],
                             speechConfig: {
@@ -309,7 +329,7 @@ You is now being connected with a person.`;
                                         voiceName: voiceName,
                                     },
                                 },
-                                //language_code: "vi-VN", // Set language
+                                language_code: "vi-VN", // Set language
                             },
                             // Optional: Configure temperature, etc.
                             temperature: 0.3,
@@ -340,7 +360,8 @@ You is now being connected with a person.`;
                         outputAudioTranscription: {},
 
                         contextWindowCompression: {
-                            slidingWindow: {},
+                            triggerTokens: 25600,
+                            slidingWindow: { targetTokens: 12800 },
                         },
                     }
                 };
