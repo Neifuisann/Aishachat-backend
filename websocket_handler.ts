@@ -303,7 +303,7 @@ You is now being connected with a person.`;
                         model: "models/gemini-2.5-flash-preview-native-audio-dialog",
                         generationConfig: {
                             responseModalities: ["AUDIO"],
-                            proactivity: { 
+                            proactivityConfig: { 
                                 proactiveAudio: true 
                             },
                             speechConfig: {
