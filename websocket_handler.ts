@@ -323,9 +323,10 @@ You is now being connected with a person.`;
 
                         realtimeInputConfig: {
                             automaticActivityDetection: {
-                                startOfSpeechSensitivity: "START_SENSITIVITY_LOW",
-                                prefixPaddingMs: 60,
-                                silenceDurationMs: 300,
+                                startOfSpeechSensitivity: "START_SENSITIVITY_HIGH",
+                                endOfSpeechSensitivity: "END_SENSITIVITY_HIGH",
+                                prefixPaddingMs: 500,
+                                silenceDurationMs: 800,
                             },
                             // turnCoverage: "TURN_INCLUDES_ONLY_ACTIVITY",
                             activityHandling: "NO_INTERRUPTION",
