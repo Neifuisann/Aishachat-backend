@@ -331,7 +331,7 @@ You is now being connected with a person.`;
                             // turnCoverage: "TURN_INCLUDES_ONLY_ACTIVITY",
                             activityHandling: "NO_INTERRUPTION",
                         },
-                        ProactivityConfig: { 
+                        proactivity: { 
                             proactiveAudio: true 
                         },
 
