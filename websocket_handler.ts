@@ -419,19 +419,19 @@ You is now being connected with a person.`;
                     !deviceClosed &&
                     deviceWs.readyState === WSWebSocket.OPEN // Check device WS state *before* potentially sending/retrying
                 ) {
-                    // Send QUOTA.EXCEEDED message to device
-                    console.log("Device => Sending QUOTA.EXCEEDED due to Gemini quota error.");
-                    deviceWs.send(JSON.stringify({ type: "server", msg: "QUOTA.EXCEEDED" }));
-
-                    // Try to rotate to next API key
+                    // Try to rotate to next API key first
                     const rotatedSuccessfully = apiKeyManager.rotateToNextKey();
 
                     if (rotatedSuccessfully) {
-                        // Immediately try with the next key
+                        // Immediately try with the next key (no sound notification yet)
                         console.log(`Quota exceeded. Rotating to next API key and retrying immediately...`);
                         connectToGeminiLive();
                     } else {
-                        // All keys exhausted, use retry delays
+                        // All keys exhausted - NOW send QUOTA.EXCEEDED message to device (triggers sound)
+                        console.log("Device => Sending QUOTA.EXCEEDED - all API keys exhausted.");
+                        deviceWs.send(JSON.stringify({ type: "server", msg: "QUOTA.EXCEEDED" }));
+
+                        // Use retry delays
                         if (retryCount < maxRetries) {
                             const delay = retryDelays[retryCount];
                             retryCount++;
