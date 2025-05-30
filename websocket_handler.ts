@@ -303,6 +303,9 @@ You is now being connected with a person.`;
                         model: "models/gemini-2.5-flash-preview-native-audio-dialog",
                         generationConfig: {
                             responseModalities: ["AUDIO"],
+                            proactivity: { 
+                                proactiveAudio: true 
+                            },
                             speechConfig: {
                                 voiceConfig: {
                                     prebuiltVoiceConfig: {
@@ -323,14 +326,12 @@ You is now being connected with a person.`;
 
                         realtimeInputConfig: {
                             automaticActivityDetection: {
-                                silenceDurationMs: 200,
-                                startOfSpeechSensitivity: "START_SENSITIVITY_LOW"
+                                startOfSpeechSensitivity: "START_SENSITIVITY_LOW",
+                                prefixPaddingMs: 60,
+                                silenceDurationMs: 300,
                             },
                             // turnCoverage: "TURN_INCLUDES_ONLY_ACTIVITY",
                             activityHandling: "NO_INTERRUPTION",
-                        },
-                        ProactivityConfig: {
-                            proactiveAudio: true,
                         },
                         //outputAudioTranscription: {}, // Request transcriptions
                         contextWindowCompression: {
