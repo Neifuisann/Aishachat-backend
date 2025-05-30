@@ -20,8 +20,7 @@ import {
 
 import { callGeminiVision } from "./vision.ts";
 import { SetVolume } from "./volume_handler.ts";
-import { GetMemory, UpdateMemory } from "./memory_handler.ts";
-import { AddNote, SearchNotes, UpdateNote, DeleteNote, GetAllNotes } from "./note_handler.ts";
+import { ManageData } from "./data_manager.ts";
 import { rotateImage180, isValidJpegBase64 } from "./image_utils.ts";
 
 import {
@@ -132,24 +131,32 @@ CRITICAL TOOL SELECTION RULES:
 TOOL USAGE PRIORITIES:
 - GetVision: ONLY when user explicitly asks about images/visual content
 - SetVolume: ONLY when user mentions volume/sound level/hearing issues
-- Memory tools: For AI learning user preferences (NOT user notes)
-- Note tools: For user's personal note-taking and reminders
+- ManageData: For ALL note-taking and persona management tasks
 
-MEMORY vs NOTES:
-- GetMemory/UpdateMemory: AI's knowledge about user preferences
-- AddNote/SearchNotes/UpdateNote/DeleteNote: User's personal notes
+MANAGEDATA MODAL INTERFACE:
+1. First select mode: "Persona" (AI memory) or "Notes" (user data)
+2. Then select action: "Search", "Edit", or "Delete"
+3. Provide required parameters based on mode/action combination
+
+PERSONA MODE:
+- Search: Get current AI knowledge about user preferences
+- Edit: Update AI's stored knowledge (provide newPersona)
+- Delete: Clear AI's stored knowledge
+
+NOTES MODE:
+- Search: Find user's notes (provide query, optional dateFrom/dateTo)
+- Edit: Add new note (provide body, optional title/imageId) OR update existing note (provide noteId + title/body)
+- Delete: Remove note (provide noteId, ALWAYS confirm first)
 
 REQUIRED CONFIRMATIONS:
-- DeleteNote: ALWAYS confirm before deleting
-- UpdateNote: Confirm changes with user
+- ManageData Notes Delete: ALWAYS confirm before deleting
+- ManageData Notes Edit (update): Confirm changes with user
 - SetVolume: Confirm the volume level
 
 PARAMETER REQUIREMENTS:
-- AddNote: body required, title optional
-- SearchNotes: query required, dates optional
-- UpdateNote/DeleteNote: search for note first to get noteId
-- SetVolume: volumeLevel must be 0-100
+- ManageData: mode and action always required
 - GetVision: provide specific, clear prompts
+- SetVolume: volumeLevel must be 0-100
 </tool_calling_instructions>
 
 <voice_only_response_format>
@@ -261,105 +268,53 @@ You is now being connected with a person.`;
                                 },
                             },
                             {
-                                name: "GetMemory",
-                                description: "Retrieves AI's stored knowledge about user preferences, likes, and dislikes. Use to understand what the AI has learned about the user. This is for AI memory, NOT user notes.",
-                                parameters: {
-                                    type: "OBJECT",
-                                    properties: {}
-                                },
-                            },
-                            {
-                                name: "UpdateMemory",
-                                description: "Updates AI's stored knowledge about user preferences, likes, and dislikes. Always call GetMemory first to see current state. This is for AI learning, NOT user note-taking.",
+                                name: "ManageData",
+                                description: "Unified modal interface for managing both persona (AI memory) and notes (user data). First select mode ('Persona' or 'Notes'), then action ('Search', 'Edit', 'Delete'). Use for all note-taking and persona management tasks.",
                                 parameters: {
                                     type: "OBJECT",
                                     properties: {
-                                        newPersona: {
+                                        mode: {
                                             type: "STRING",
-                                            description: "Complete updated description of user's preferences and personality (e.g., 'likes pizza and drawing, dislikes loud noises, prefers morning conversations')."
+                                            description: "Data type to manage: 'Persona' (AI's knowledge about user preferences) or 'Notes' (user's personal notes and reminders)."
                                         },
-                                    },
-                                    required: ["newPersona"]
-                                },
-                            },
-                            {
-                                name: "AddNote",
-                                description: "Creates a personal note for the user. Use when user says 'take note', 'remember this', 'write down', or wants to save information for later. This is for USER notes, not AI memory.",
-                                parameters: {
-                                    type: "OBJECT",
-                                    properties: {
+                                        action: {
+                                            type: "STRING",
+                                            description: "Action to perform: 'Search' (retrieve/find data), 'Edit' (add/update data), or 'Delete' (remove data)."
+                                        },
+                                        query: {
+                                            type: "STRING",
+                                            description: "Search keywords for Notes Search (e.g., 'shopping list', 'meeting notes')."
+                                        },
+                                        noteId: {
+                                            type: "STRING",
+                                            description: "Note ID for Notes Edit/Delete of existing notes (get from Notes Search first)."
+                                        },
                                         title: {
                                             type: "STRING",
-                                            description: "Optional title for the note. If not provided, will be auto-generated from content."
+                                            description: "Note title for Notes Edit (optional, auto-generated if not provided)."
                                         },
                                         body: {
                                             type: "STRING",
-                                            description: "The main content of the note that the user wants to save and remember later."
+                                            description: "Note content for Notes Edit (required when adding new note)."
                                         },
-                                        imageId: {
+                                        newPersona: {
                                             type: "STRING",
-                                            description: "Optional image ID if the note relates to an image captured via GetVision."
-                                        }
-                                    },
-                                    required: ["body"]
-                                },
-                            },
-                            {
-                                name: "SearchNotes",
-                                description: "Searches user's personal notes by keywords or date range. Use when user asks to 'find my note about...', 'look up my notes', or 'what did I write about...'.",
-                                parameters: {
-                                    type: "OBJECT",
-                                    properties: {
-                                        query: {
-                                            type: "STRING",
-                                            description: "Keywords to search for in note titles and content (e.g., 'shopping list', 'meeting notes', 'recipe')."
+                                            description: "Complete persona description for Persona Edit (e.g., 'likes pizza, dislikes loud noises, prefers morning conversations')."
                                         },
                                         dateFrom: {
                                             type: "STRING",
-                                            description: "Optional start date for search in ISO format (e.g., '2024-01-01T00:00:00Z')."
+                                            description: "Start date for Notes Search (optional, ISO format: '2024-01-01T00:00:00Z')."
                                         },
                                         dateTo: {
                                             type: "STRING",
-                                            description: "Optional end date for search in ISO format (e.g., '2024-12-31T23:59:59Z')."
-                                        }
-                                    },
-                                    required: ["query"]
-                                },
-                            },
-                            {
-                                name: "UpdateNote",
-                                description: "Modifies an existing note's title or content. Use when user says 'edit my note', 'change my note', or 'update my note'. ALWAYS search for the note first to confirm which one to update.",
-                                parameters: {
-                                    type: "OBJECT",
-                                    properties: {
-                                        noteId: {
-                                            type: "STRING",
-                                            description: "The ID of the note to update (must be obtained from SearchNotes first)."
+                                            description: "End date for Notes Search (optional, ISO format: '2024-12-31T23:59:59Z')."
                                         },
-                                        title: {
+                                        imageId: {
                                             type: "STRING",
-                                            description: "Optional new title for the note."
-                                        },
-                                        body: {
-                                            type: "STRING",
-                                            description: "Optional new content for the note."
+                                            description: "Image ID for Notes Edit (optional, if note relates to captured image)."
                                         }
                                     },
-                                    required: ["noteId"]
-                                },
-                            },
-                            {
-                                name: "DeleteNote",
-                                description: "Permanently deletes a note. Use when user says 'delete my note' or 'remove my note'. ALWAYS search for the note first AND ask for confirmation before deleting.",
-                                parameters: {
-                                    type: "OBJECT",
-                                    properties: {
-                                        noteId: {
-                                            type: "STRING",
-                                            description: "The ID of the note to delete (must be obtained from SearchNotes first)."
-                                        }
-                                    },
-                                    required: ["noteId"]
+                                    required: ["mode", "action"]
                                 },
                             },
                         ],
@@ -381,7 +336,7 @@ You is now being connected with a person.`;
                                 //language_code: "vi-VN", // Set language
                             },
                             // Optional: Configure temperature, etc.
-                            // temperature: 0.7,
+                            temperature: 0.3,
                         },
                         systemInstruction: {
                             role: "system",
@@ -392,9 +347,14 @@ You is now being connected with a person.`;
 
                         realtimeInputConfig: {
                             automaticActivityDetection: {
-                                silenceDurationMs: 500,
+                                silenceDurationMs: 200,
+                                startOfSpeechSensitivity: "START_SENSITIVITY_LOW"
                             },
                             // turnCoverage: "TURN_INCLUDES_ONLY_ACTIVITY",
+                            activityHandling: "NO_INTERRUPTION",
+                        },
+                        ProactivityConfig: {
+                            proactiveAudio: true,
                         },
                         //outputAudioTranscription: {}, // Request transcriptions
                         contextWindowCompression: {
@@ -609,163 +569,41 @@ You is now being connected with a person.`;
                             console.error(`Cannot send SetVolume function response (ID: ${callId}), Gemini WS not open.`);
                         }
 
-                    } else if (call.name === "GetMemory" && call.id) {
+                    } else if (call.name === "ManageData" && call.id) {
                         const callId = call.id;
-                        console.log(`*GetMemory (ID: ${callId}) called.`);
-                        // Initialize with appropriate default types
-                        let memoryResult: { success: boolean; persona?: string; message: string } =
-                            { success: false, message: "Unknown error fetching memory." };
-
-                        try {
-                            memoryResult = await GetMemory(supabase, user.user_id);
-                            console.log(`GetMemory result for ID ${callId}:`, memoryResult);
-                        } catch (err) {
-                            console.error(`Error executing GetMemory for ID ${callId}:`, err);
-                            // Ensure the error case also fits the type (persona will be undefined)
-                            memoryResult = { success: false, message: err instanceof Error ? err.message : String(err) };
-                        }
-
-                        // Send function response back to Gemini Live
-                        if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN) {
-                            const functionResponsePayload = {
-                                functionResponses: [
-                                    {
-                                        id: callId,
-                                        name: "GetMemory",
-                                        // Send back the persona (or empty string) if successful, otherwise the error message
-                                        response: { result: memoryResult.success ? (memoryResult.persona ?? "") : memoryResult.message }
-                                    }
-                                ]
-                            };
-                            const functionResponse = { toolResponse: functionResponsePayload };
-                            try {
-                                geminiWs.send(JSON.stringify(functionResponse));
-                                console.log(`Gemini Live => Sent Function Response for GetMemory (ID: ${callId}):`, JSON.stringify(functionResponsePayload));
-                            } catch (err) {
-                                console.error(`Failed to send GetMemory function response (ID: ${callId}) to Gemini:`, err);
-                            }
-                        } else {
-                            console.error(`Cannot send GetMemory function response (ID: ${callId}), Gemini WS not open.`);
-                        }
-
-                    } else if (call.name === "UpdateMemory" && call.id) {
-                        const callId = call.id;
-                        const newPersona = call.args?.newPersona;
-                        console.log(`*UpdateMemory (ID: ${callId}) called with args:`, call.args);
-                        let updateResult = { success: false, message: "Unknown error updating memory." };
-
-                        if (typeof newPersona === 'string') {
-                            try {
-                                updateResult = await UpdateMemory(supabase, user.user_id, newPersona);
-                                console.log(`UpdateMemory result for ID ${callId}:`, updateResult);
-                            } catch (err) {
-                                console.error(`Error executing UpdateMemory for ID ${callId}:`, err);
-                                updateResult = { success: false, message: err instanceof Error ? err.message : String(err) };
-                            }
-                        } else {
-                            const errorMsg = `Invalid or missing 'newPersona' argument for UpdateMemory (ID: ${callId}). Expected a string.`;
-                            console.error(errorMsg);
-                            updateResult = { success: false, message: errorMsg };
-                        }
-
-                        // Send function response back to Gemini Live
-                        if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN) {
-                            const functionResponsePayload = {
-                                functionResponses: [
-                                    {
-                                        id: callId,
-                                        name: "UpdateMemory",
-                                        response: { result: updateResult.message } // Send back the result message
-                                    }
-                                ]
-                            };
-                            const functionResponse = { toolResponse: functionResponsePayload };
-                            try {
-                                geminiWs.send(JSON.stringify(functionResponse));
-                                console.log(`Gemini Live => Sent Function Response for UpdateMemory (ID: ${callId}):`, JSON.stringify(functionResponsePayload));
-                            } catch (err) {
-                                console.error(`Failed to send UpdateMemory function response (ID: ${callId}) to Gemini:`, err);
-                            }
-                        } else {
-                            console.error(`Cannot send UpdateMemory function response (ID: ${callId}), Gemini WS not open.`);
-                        }
-
-                    } else if (call.name === "AddNote" && call.id) {
-                        const callId = call.id;
+                        const mode = call.args?.mode;
+                        const action = call.args?.action;
+                        const query = call.args?.query;
+                        const noteId = call.args?.noteId;
                         const title = call.args?.title;
                         const body = call.args?.body;
-                        const imageId = call.args?.imageId;
-                        console.log(`*AddNote (ID: ${callId}) called with args:`, call.args);
-                        let noteResult = { success: false, message: "Unknown error adding note." };
-
-                        if (typeof body === 'string' && body.trim()) {
-                            try {
-                                const result = await AddNote(supabase, user.user_id, title, body, imageId);
-                                noteResult = { success: result.success, message: result.message };
-                                console.log(`AddNote result for ID ${callId}:`, noteResult);
-                            } catch (err) {
-                                console.error(`Error executing AddNote for ID ${callId}:`, err);
-                                noteResult = { success: false, message: err instanceof Error ? err.message : String(err) };
-                            }
-                        } else {
-                            const errorMsg = `Invalid or missing 'body' argument for AddNote (ID: ${callId}). Expected a non-empty string.`;
-                            console.error(errorMsg);
-                            noteResult = { success: false, message: errorMsg };
-                        }
-
-                        // Send function response back to Gemini Live
-                        if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN) {
-                            const functionResponsePayload = {
-                                functionResponses: [
-                                    {
-                                        id: callId,
-                                        name: "AddNote",
-                                        response: { result: noteResult.message }
-                                    }
-                                ]
-                            };
-                            const functionResponse = { toolResponse: functionResponsePayload };
-                            try {
-                                geminiWs.send(JSON.stringify(functionResponse));
-                                console.log(`Gemini Live => Sent Function Response for AddNote (ID: ${callId}):`, JSON.stringify(functionResponsePayload));
-                            } catch (err) {
-                                console.error(`Failed to send AddNote function response (ID: ${callId}) to Gemini:`, err);
-                            }
-                        } else {
-                            console.error(`Cannot send AddNote function response (ID: ${callId}), Gemini WS not open.`);
-                        }
-
-                    } else if (call.name === "SearchNotes" && call.id) {
-                        const callId = call.id;
-                        const query = call.args?.query;
+                        const newPersona = call.args?.newPersona;
                         const dateFrom = call.args?.dateFrom;
                         const dateTo = call.args?.dateTo;
-                        console.log(`*SearchNotes (ID: ${callId}) called with args:`, call.args);
-                        let searchResult = { success: false, message: "Unknown error searching notes." };
+                        const imageId = call.args?.imageId;
 
-                        if (typeof query === 'string' && query.trim()) {
-                            try {
-                                const result = await SearchNotes(supabase, user.user_id, query, dateFrom, dateTo);
-                                if (result.success && result.notes) {
-                                    const notesInfo = result.notes.map(note =>
-                                        `ID: ${note.note_id}, Title: "${note.title}", Created: ${new Date(note.created_at).toLocaleString()}`
-                                    ).join('\n');
-                                    searchResult = {
-                                        success: true,
-                                        message: `Found ${result.notes.length} note(s):\n${notesInfo}`
-                                    };
-                                } else {
-                                    searchResult = { success: result.success, message: result.message };
-                                }
-                                console.log(`SearchNotes result for ID ${callId}:`, searchResult);
-                            } catch (err) {
-                                console.error(`Error executing SearchNotes for ID ${callId}:`, err);
-                                searchResult = { success: false, message: err instanceof Error ? err.message : String(err) };
-                            }
-                        } else {
-                            const errorMsg = `Invalid or missing 'query' argument for SearchNotes (ID: ${callId}). Expected a non-empty string.`;
-                            console.error(errorMsg);
-                            searchResult = { success: false, message: errorMsg };
+                        console.log(`*ManageData (ID: ${callId}) called with args:`, call.args);
+                        let result = { success: false, message: "Unknown error in ManageData." };
+
+                        try {
+                            result = await ManageData(
+                                supabase,
+                                user.user_id,
+                                mode,
+                                action,
+                                query,
+                                noteId,
+                                title,
+                                body,
+                                newPersona,
+                                dateFrom,
+                                dateTo,
+                                imageId
+                            );
+                            console.log(`ManageData result for ID ${callId}:`, result);
+                        } catch (err) {
+                            console.error(`Error executing ManageData for ID ${callId}:`, err);
+                            result = { success: false, message: err instanceof Error ? err.message : String(err) };
                         }
 
                         // Send function response back to Gemini Live
@@ -774,109 +612,23 @@ You is now being connected with a person.`;
                                 functionResponses: [
                                     {
                                         id: callId,
-                                        name: "SearchNotes",
-                                        response: { result: searchResult.message }
+                                        name: "ManageData",
+                                        response: { result: result.message }
                                     }
                                 ]
                             };
                             const functionResponse = { toolResponse: functionResponsePayload };
                             try {
                                 geminiWs.send(JSON.stringify(functionResponse));
-                                console.log(`Gemini Live => Sent Function Response for SearchNotes (ID: ${callId}):`, JSON.stringify(functionResponsePayload));
+                                console.log(`Gemini Live => Sent Function Response for ManageData (ID: ${callId}):`, JSON.stringify(functionResponsePayload));
                             } catch (err) {
-                                console.error(`Failed to send SearchNotes function response (ID: ${callId}) to Gemini:`, err);
+                                console.error(`Failed to send ManageData function response (ID: ${callId}) to Gemini:`, err);
                             }
                         } else {
-                            console.error(`Cannot send SearchNotes function response (ID: ${callId}), Gemini WS not open.`);
+                            console.error(`Cannot send ManageData function response (ID: ${callId}), Gemini WS not open.`);
                         }
 
-                    } else if (call.name === "UpdateNote" && call.id) {
-                        const callId = call.id;
-                        const noteId = call.args?.noteId;
-                        const title = call.args?.title;
-                        const body = call.args?.body;
-                        console.log(`*UpdateNote (ID: ${callId}) called with args:`, call.args);
-                        let updateResult = { success: false, message: "Unknown error updating note." };
 
-                        if (typeof noteId === 'string' && noteId.trim()) {
-                            try {
-                                const result = await UpdateNote(supabase, user.user_id, noteId, title, body);
-                                updateResult = { success: result.success, message: result.message };
-                                console.log(`UpdateNote result for ID ${callId}:`, updateResult);
-                            } catch (err) {
-                                console.error(`Error executing UpdateNote for ID ${callId}:`, err);
-                                updateResult = { success: false, message: err instanceof Error ? err.message : String(err) };
-                            }
-                        } else {
-                            const errorMsg = `Invalid or missing 'noteId' argument for UpdateNote (ID: ${callId}). Expected a non-empty string.`;
-                            console.error(errorMsg);
-                            updateResult = { success: false, message: errorMsg };
-                        }
-
-                        // Send function response back to Gemini Live
-                        if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN) {
-                            const functionResponsePayload = {
-                                functionResponses: [
-                                    {
-                                        id: callId,
-                                        name: "UpdateNote",
-                                        response: { result: updateResult.message }
-                                    }
-                                ]
-                            };
-                            const functionResponse = { toolResponse: functionResponsePayload };
-                            try {
-                                geminiWs.send(JSON.stringify(functionResponse));
-                                console.log(`Gemini Live => Sent Function Response for UpdateNote (ID: ${callId}):`, JSON.stringify(functionResponsePayload));
-                            } catch (err) {
-                                console.error(`Failed to send UpdateNote function response (ID: ${callId}) to Gemini:`, err);
-                            }
-                        } else {
-                            console.error(`Cannot send UpdateNote function response (ID: ${callId}), Gemini WS not open.`);
-                        }
-
-                    } else if (call.name === "DeleteNote" && call.id) {
-                        const callId = call.id;
-                        const noteId = call.args?.noteId;
-                        console.log(`*DeleteNote (ID: ${callId}) called with args:`, call.args);
-                        let deleteResult = { success: false, message: "Unknown error deleting note." };
-
-                        if (typeof noteId === 'string' && noteId.trim()) {
-                            try {
-                                const result = await DeleteNote(supabase, user.user_id, noteId);
-                                deleteResult = { success: result.success, message: result.message };
-                                console.log(`DeleteNote result for ID ${callId}:`, deleteResult);
-                            } catch (err) {
-                                console.error(`Error executing DeleteNote for ID ${callId}:`, err);
-                                deleteResult = { success: false, message: err instanceof Error ? err.message : String(err) };
-                            }
-                        } else {
-                            const errorMsg = `Invalid or missing 'noteId' argument for DeleteNote (ID: ${callId}). Expected a non-empty string.`;
-                            console.error(errorMsg);
-                            deleteResult = { success: false, message: errorMsg };
-                        }
-
-                        // Send function response back to Gemini Live
-                        if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN) {
-                            const functionResponsePayload = {
-                                functionResponses: [
-                                    {
-                                        id: callId,
-                                        name: "DeleteNote",
-                                        response: { result: deleteResult.message }
-                                    }
-                                ]
-                            };
-                            const functionResponse = { toolResponse: functionResponsePayload };
-                            try {
-                                geminiWs.send(JSON.stringify(functionResponse));
-                                console.log(`Gemini Live => Sent Function Response for DeleteNote (ID: ${callId}):`, JSON.stringify(functionResponsePayload));
-                            } catch (err) {
-                                console.error(`Failed to send DeleteNote function response (ID: ${callId}) to Gemini:`, err);
-                            }
-                        } else {
-                            console.error(`Cannot send DeleteNote function response (ID: ${callId}), Gemini WS not open.`);
-                        }
 
                     } else {
                         console.warn(`Received unhandled top-level function call: ${call.name} or missing ID.`);
