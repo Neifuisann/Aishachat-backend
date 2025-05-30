@@ -334,7 +334,11 @@ You is now being connected with a person.`;
                         proactivity: { 
                             proactiveAudio: true 
                         },
-                        //outputAudioTranscription: {}, // Request transcriptions
+
+                        inputAudioTranscription: {},
+                        
+                        outputAudioTranscription: {},
+
                         contextWindowCompression: {
                             slidingWindow: {},
                         },
