@@ -10,6 +10,7 @@ import {
     MIC_ACCUM_CHUNK_SIZE,
     TTS_SAMPLE_RATE,
     isDev,
+    USE_GEMINI_LIVE_VISION,
 } from "./config.ts";
 
 import {
@@ -21,6 +22,7 @@ import {
 import { callGeminiVision } from "./vision.ts";
 import { SetVolume } from "./volume_handler.ts";
 import { ManageData } from "./data_manager.ts";
+import { ReadingManager } from "./reading_handler.ts";
 import { rotateImage180, isValidJpegBase64 } from "./image_utils.ts";
 
 import {
@@ -132,6 +134,7 @@ TOOL USAGE PRIORITIES:
 - GetVision: ONLY when user explicitly asks about images/visual content
 - SetVolume: ONLY when user mentions volume/sound level/hearing issues
 - ManageData: For ALL note-taking and persona management tasks
+- ReadingManager: For ALL book reading, reading history, and reading settings tasks
 
 MANAGEDATA MODAL INTERFACE:
 1. First select mode: "Persona" (AI memory) or "Notes" (user data)
@@ -147,6 +150,17 @@ NOTES MODE:
 - Search: Find user's notes (provide query, optional dateFrom/dateTo)
 - Edit: Add new note (provide body, optional title/imageId) OR update existing note (provide noteId + title/body)
 - Delete: Remove note (provide noteId, ALWAYS confirm first)
+
+READINGMANAGER MODAL INTERFACE:
+1. First select mode: "History", "Read", "Search", or "Settings"
+2. Then select appropriate action for each mode
+3. Provide required parameters based on mode/action combination
+
+READING MODES:
+- History: "Check" (get reading progress for a book, provide bookName)
+- Read: "Continue" (from last position), "Start" (from beginning), "GoTo" (specific page, provide pageNumber)
+- Search: "Find" (search keywords in book, provide bookName and keyword)
+- Settings: "Get" (current reading preferences), "Set" (update preferences, provide readingMode and readingAmount)
 
 REQUIRED CONFIRMATIONS:
 - ManageData Notes Delete: ALWAYS confirm before deleting
@@ -308,6 +322,44 @@ You is now being connected with a person.`;
                                         imageId: {
                                             type: "STRING",
                                             description: "Image ID for Notes Edit (optional, if note relates to captured image)."
+                                        }
+                                    },
+                                    required: ["mode", "action"]
+                                },
+                            },
+                            {
+                                name: "ReadingManager",
+                                description: "Unified modal interface for book reading system. Supports reading history, book content, search within books, and reading settings management. Use for all book-related tasks.",
+                                parameters: {
+                                    type: "OBJECT",
+                                    properties: {
+                                        mode: {
+                                            type: "STRING",
+                                            description: "Reading operation mode: 'History' (check reading progress), 'Read' (read book content), 'Search' (find keywords in book), or 'Settings' (manage reading preferences)."
+                                        },
+                                        action: {
+                                            type: "STRING",
+                                            description: "Action to perform within the selected mode. History: 'Check'. Read: 'Continue', 'Start', 'GoTo'. Search: 'Find'. Settings: 'Get', 'Set'."
+                                        },
+                                        bookName: {
+                                            type: "STRING",
+                                            description: "Name of the book (without .txt extension). Required for History, Read, and Search modes."
+                                        },
+                                        pageNumber: {
+                                            type: "NUMBER",
+                                            description: "Page number for Read mode with 'GoTo' action (1-based indexing)."
+                                        },
+                                        keyword: {
+                                            type: "STRING",
+                                            description: "Search keyword for Search mode 'Find' action."
+                                        },
+                                        readingMode: {
+                                            type: "STRING",
+                                            description: "Reading mode for Settings 'Set' action: 'paragraphs', 'sentences', or 'fullpage'."
+                                        },
+                                        readingAmount: {
+                                            type: "NUMBER",
+                                            description: "Number of paragraphs or sentences to read at once (for Settings 'Set' action, not needed for 'fullpage' mode)."
                                         }
                                     },
                                     required: ["mode", "action"]
@@ -631,7 +683,58 @@ You is now being connected with a person.`;
                             console.error(`Cannot send ManageData function response (ID: ${callId}), Gemini WS not open.`);
                         }
 
+                    } else if (call.name === "ReadingManager" && call.id) {
+                        const callId = call.id;
+                        const mode = call.args?.mode;
+                        const action = call.args?.action;
+                        const bookName = call.args?.bookName;
+                        const pageNumber = call.args?.pageNumber;
+                        const keyword = call.args?.keyword;
+                        const readingMode = call.args?.readingMode;
+                        const readingAmount = call.args?.readingAmount;
 
+                        console.log(`*ReadingManager (ID: ${callId}) called with args:`, call.args);
+                        let result = { success: false, message: "Unknown error in ReadingManager." };
+
+                        try {
+                            result = await ReadingManager(
+                                supabase,
+                                user.user_id,
+                                mode,
+                                action,
+                                bookName,
+                                pageNumber,
+                                keyword,
+                                readingMode,
+                                readingAmount
+                            );
+                            console.log(`ReadingManager result for ID ${callId}:`, result);
+                        } catch (err) {
+                            console.error(`Error executing ReadingManager for ID ${callId}:`, err);
+                            result = { success: false, message: err instanceof Error ? err.message : String(err) };
+                        }
+
+                        // Send function response back to Gemini Live
+                        if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN) {
+                            const functionResponsePayload = {
+                                functionResponses: [
+                                    {
+                                        id: callId,
+                                        name: "ReadingManager",
+                                        response: { result: result.message }
+                                    }
+                                ]
+                            };
+                            const functionResponse = { toolResponse: functionResponsePayload };
+                            try {
+                                geminiWs.send(JSON.stringify(functionResponse));
+                                console.log(`Gemini Live => Sent Function Response for ReadingManager (ID: ${callId}):`, JSON.stringify(functionResponsePayload));
+                            } catch (err) {
+                                console.error(`Failed to send ReadingManager function response (ID: ${callId}) to Gemini:`, err);
+                            }
+                        } else {
+                            console.error(`Cannot send ReadingManager function response (ID: ${callId}), Gemini WS not open.`);
+                        }
 
                     } else {
                         console.warn(`Received unhandled top-level function call: ${call.name} or missing ID.`);
@@ -946,12 +1049,59 @@ You is now being connected with a person.`;
                         // --- END: Upload to Supabase Storage ---
 
 
-                        // Call the Vision API regardless of upload success for now
-                        // (unless photoCaptureFailed was set due to missing initial data)
+                        // Choose between direct Gemini Live vision or external API
                         if (!photoCaptureFailed) {
-                            console.log(`Calling Gemini Vision with prompt: "${pendingVisionCall.prompt}"`);
-                            visionResult = await callGeminiVision(processedBase64Jpeg, pendingVisionCall.prompt);
-                            console.log("Gemini Vision Result =>", visionResult);
+                            if (USE_GEMINI_LIVE_VISION) {
+                                // Direct method: Send image through Gemini Live WebSocket
+                                console.log(`Using Gemini Live direct vision with prompt: "${pendingVisionCall.prompt}"`);
+                                try {
+                                    if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN) {
+                                        // Send the image directly through Gemini Live WebSocket
+                                        const imageMessage = {
+                                            realtime_input: {
+                                                media_chunks: [{
+                                                    data: processedBase64Jpeg,
+                                                    mime_type: "image/jpeg"
+                                                }]
+                                            }
+                                        };
+
+                                        // Send the image
+                                        geminiWs.send(JSON.stringify(imageMessage));
+                                        console.log("Gemini Live => Sent image directly through WebSocket");
+
+                                        // Send the prompt as a text message
+                                        const promptMessage = {
+                                            clientContent: {
+                                                turns: [{
+                                                    role: "user",
+                                                    parts: [{ text: pendingVisionCall.prompt }]
+                                                }],
+                                                turnComplete: true
+                                            }
+                                        };
+
+                                        geminiWs.send(JSON.stringify(promptMessage));
+                                        console.log("Gemini Live => Sent vision prompt directly");
+
+                                        // For direct method, we don't need to send function response
+                                        // Gemini Live will respond directly with the analysis
+                                        visionResult = "Image sent directly to Gemini Live for analysis";
+
+                                    } else {
+                                        console.error("Cannot send image directly, Gemini WS not open");
+                                        visionResult = "Failed to send image directly - Gemini connection not available";
+                                    }
+                                } catch (directErr) {
+                                    console.error("Error sending image directly to Gemini Live:", directErr);
+                                    visionResult = "Failed to send image directly to Gemini Live";
+                                }
+                            } else {
+                                // External method: Use external Gemini Vision API (current implementation)
+                                console.log(`Using external Gemini Vision API with prompt: "${pendingVisionCall.prompt}"`);
+                                visionResult = await callGeminiVision(processedBase64Jpeg, pendingVisionCall.prompt);
+                                console.log("Gemini Vision Result =>", visionResult);
+                            }
                         } else {
                             // If upload failed
                             visionResult = "Failed to upload image and get vision description. Please try again.";
@@ -959,8 +1109,8 @@ You is now being connected with a person.`;
                         }
 
 
-                        // Send function response back to Gemini Live
-                        if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN) {
+                        // Send function response back to Gemini Live (only for external API method)
+                        if (!USE_GEMINI_LIVE_VISION && isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN) {
                             if (pendingVisionCall.id) {
                                 const functionResponsePayload = {
                                     functionResponses: [
@@ -987,6 +1137,8 @@ You is now being connected with a person.`;
                             } else {
                                 console.error("Error: Attempted to send function response but pendingVisionCall.id was missing. Vision result:", visionResult);
                             }
+                        } else if (USE_GEMINI_LIVE_VISION) {
+                            console.log("Gemini Live => Using direct vision method, no function response needed");
                         } else {
                             console.error("Cannot send function response, Gemini WS not open.");
                         }

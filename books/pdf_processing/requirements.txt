@@ -1,0 +1,2 @@
+pdfplumber>=0.9.0
+pathlib2>=2.3.7

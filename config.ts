@@ -97,6 +97,9 @@ export const GEMINI_LIVE_URL_TEMPLATE =
 
 export const GEMINI_VISION_MODEL = Deno.env.get("GEMINI_VISION_MODEL") || "gemini-2.5-flash-preview-05-20";
 
+// Vision Processing Configuration
+export const USE_GEMINI_LIVE_VISION = Deno.env.get("USE_GEMINI_LIVE_VISION") === "true";
+
 /**
  * Get the current Gemini Vision API URL with the active API key
  */

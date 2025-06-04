@@ -101,4 +101,34 @@ declare global {
         device_id: string;
         device?: IDevice;
     }
+
+    interface IBook {
+        book_id: string;
+        book_name: string;
+        file_path: string;
+        total_pages: number;
+        is_public: boolean;
+        created_at: string;
+        author?: string;
+        description?: string;
+    }
+
+    interface IReadingHistory {
+        history_id: string;
+        user_id: string;
+        book_name: string;
+        current_page: number;
+        total_pages: number;
+        last_read_at: string;
+        created_at: string;
+    }
+
+    interface IReadingSettings {
+        settings_id: string;
+        user_id: string;
+        reading_mode: 'paragraphs' | 'sentences' | 'fullpage';
+        reading_amount: number;
+        created_at: string;
+        updated_at: string;
+    }
 }

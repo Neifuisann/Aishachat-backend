@@ -1,0 +1,94 @@
+[CHAPTER:Chương 1: Giới thiệu về Lập trình]
+[PAGE:1]
+Lập trình là quá trình tạo ra các chương trình máy tính bằng cách viết mã nguồn. Đây là một kỹ năng quan trọng trong thời đại công nghệ số hiện nay.
+
+Trong chương này, chúng ta sẽ tìm hiểu về các khái niệm cơ bản của lập trình và tầm quan trọng của nó trong cuộc sống hàng ngày.
+
+[SECTION:1.1 Khái niệm cơ bản]
+Lập trình viên sử dụng các ngôn ngữ lập trình để giao tiếp với máy tính. Máy tính chỉ hiểu được ngôn ngữ máy (0 và 1), nhưng con người khó có thể viết trực tiếp bằng ngôn ngữ máy.
+
+[PAGE:2]
+Vì vậy, các ngôn ngữ lập trình bậc cao được tạo ra để giúp con người dễ dàng hơn trong việc viết chương trình. Các ngôn ngữ này sau đó sẽ được dịch sang ngôn ngữ máy.
+
+[SECTION:1.2 Tầm quan trọng của lập trình]
+Lập trình đóng vai trò quan trọng trong nhiều lĩnh vực:
+- Phát triển ứng dụng di động
+- Xây dựng website
+- Trí tuệ nhân tạo
+- Khoa học dữ liệu
+
+[PAGE:3]
+Ngày nay, hầu hết các thiết bị điện tử đều có chương trình điều khiển. Từ điện thoại thông minh đến ô tô, từ máy giặt đến hệ thống ngân hàng, tất cả đều cần đến lập trình.
+
+[CHAPTER:Chương 2: Ngôn ngữ lập trình Python]
+[PAGE:4]
+Python là một ngôn ngữ lập trình bậc cao, dễ học và mạnh mẽ. Được tạo ra bởi Guido van Rossum vào năm 1991, Python đã trở thành một trong những ngôn ngữ phổ biến nhất thế giới.
+
+[SECTION:2.1 Đặc điểm của Python]
+Python có nhiều đặc điểm nổi bật:
+- Cú pháp đơn giản, dễ đọc
+- Thư viện phong phú
+- Cộng đồng lớn và hỗ trợ tốt
+- Đa nền tảng
+
+[PAGE:5]
+Python được sử dụng rộng rãi trong nhiều lĩnh vực như phát triển web, khoa học dữ liệu, trí tuệ nhân tạo, và tự động hóa. Nhiều công ty lớn như Google, Netflix, và Instagram đều sử dụng Python.
+
+[SECTION:2.2 Cài đặt Python]
+Để bắt đầu lập trình Python, bạn cần cài đặt Python trên máy tính. Python có thể tải miễn phí từ trang web chính thức python.org.
+
+[PAGE:6]
+Sau khi cài đặt, bạn có thể sử dụng IDLE (môi trường phát triển tích hợp) hoặc các editor khác như Visual Studio Code, PyCharm để viết code Python.
+
+[CHAPTER:Chương 3: Biến và Kiểu dữ liệu]
+[PAGE:7]
+Trong lập trình, biến là nơi lưu trữ dữ liệu. Python hỗ trợ nhiều kiểu dữ liệu khác nhau như số nguyên, số thực, chuỗi, và boolean.
+
+[SECTION:3.1 Khai báo biến]
+Trong Python, việc khai báo biến rất đơn giản:
+```python
+ten = "Nguyễn Văn A"
+tuoi = 25
+diem = 8.5
+```
+
+[PAGE:8]
+Python tự động nhận biết kiểu dữ liệu dựa trên giá trị được gán. Điều này giúp việc lập trình trở nên dễ dàng hơn so với các ngôn ngữ khác.
+
+[SECTION:3.2 Các kiểu dữ liệu cơ bản]
+Python có các kiểu dữ liệu cơ bản sau:
+- int: số nguyên
+- float: số thực
+- str: chuỗi ký tự
+- bool: giá trị logic (True/False)
+
+[PAGE:9]
+Mỗi kiểu dữ liệu có các phương thức và thuộc tính riêng. Việc hiểu rõ các kiểu dữ liệu sẽ giúp bạn viết code hiệu quả hơn.
+
+[CHAPTER:Chương 4: Cấu trúc điều khiển]
+[PAGE:10]
+Cấu trúc điều khiển cho phép chương trình thực hiện các hành động khác nhau dựa trên điều kiện hoặc lặp lại một số thao tác.
+
+[SECTION:4.1 Câu lệnh if]
+Câu lệnh if được sử dụng để thực hiện code khi điều kiện đúng:
+```python
+if tuoi >= 18:
+    print("Bạn đã đủ tuổi")
+else:
+    print("Bạn chưa đủ tuổi")
+```
+
+[PAGE:11]
+Python sử dụng thụt lề (indentation) để xác định khối code, thay vì sử dụng dấu ngoặc nhọn như các ngôn ngữ khác.
+
+[SECTION:4.2 Vòng lặp]
+Vòng lặp cho phép thực hiện một đoạn code nhiều lần:
+```python
+for i in range(5):
+    print(f"Lần lặp thứ {i}")
+```
+
+[PAGE:12]
+Có hai loại vòng lặp chính trong Python: for và while. Mỗi loại có ứng dụng riêng tùy thuộc vào tình huống cụ thể.
+
+Việc sử dụng vòng lặp giúp giảm thiểu code lặp lại và làm cho chương trình hiệu quả hơn.
