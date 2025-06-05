@@ -39,13 +39,15 @@ export function minutesToTime(minutes: number): string {
 }
 
 /**
- * Validates time format (HH:MM)
+ * Validates time format (HH:MM or HH:MM:SS)
  * @param timeStr - Time string to validate
  * @returns True if valid, false otherwise
  */
 export function isValidTimeFormat(timeStr: string): boolean {
-    const timeRegex = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/;
-    return timeRegex.test(timeStr);
+    // Accept both HH:MM and HH:MM:SS formats
+    const timeRegexHHMM = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/;
+    const timeRegexHHMMSS = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$/;
+    return timeRegexHHMM.test(timeStr) || timeRegexHHMMSS.test(timeStr);
 }
 
 /**
@@ -62,59 +64,74 @@ export function isValidDateFormat(dateStr: string): boolean {
 }
 
 /**
- * Parses natural language time input to HH:MM format
+ * Parses natural language time input to HH:MM:SS format for Supabase TIME type
  * @param input - Natural language time (e.g., "6am", "7pm", "18:30")
- * @returns Time in HH:MM format or null if invalid
+ * @returns Time in HH:MM:SS format or null if invalid
  */
 export function parseTimeInput(input: string): string | null {
     const cleanInput = input.toLowerCase().trim();
-    
+
     // Handle formats like "6am", "7pm"
     const amPmMatch = cleanInput.match(/^(\d{1,2})\s*(am|pm)$/);
     if (amPmMatch) {
         let hours = parseInt(amPmMatch[1]);
         const period = amPmMatch[2];
-        
+
         if (hours < 1 || hours > 12) return null;
-        
+
         if (period === 'pm' && hours !== 12) hours += 12;
         if (period === 'am' && hours === 12) hours = 0;
-        
-        return `${hours.toString().padStart(2, '0')}:00`;
+
+        return `${hours.toString().padStart(2, '0')}:00:00`;
     }
-    
+
     // Handle formats like "18:30", "6:30"
     const timeMatch = cleanInput.match(/^(\d{1,2}):(\d{2})$/);
     if (timeMatch) {
         const hours = parseInt(timeMatch[1]);
         const minutes = parseInt(timeMatch[2]);
-        
+
         if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
-        
-        return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+
+        return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:00`;
     }
-    
-    // Handle formats like "6", "18" (assume :00 minutes)
+
+    // Handle formats like "18:30:45" (full time with seconds)
+    const fullTimeMatch = cleanInput.match(/^(\d{1,2}):(\d{2}):(\d{2})$/);
+    if (fullTimeMatch) {
+        const hours = parseInt(fullTimeMatch[1]);
+        const minutes = parseInt(fullTimeMatch[2]);
+        const seconds = parseInt(fullTimeMatch[3]);
+
+        if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59 || seconds < 0 || seconds > 59) return null;
+
+        return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+    }
+
+    // Handle formats like "6", "18" (assume :00:00)
     const hourMatch = cleanInput.match(/^(\d{1,2})$/);
     if (hourMatch) {
         const hours = parseInt(hourMatch[1]);
-        
+
         if (hours < 0 || hours > 23) return null;
-        
-        return `${hours.toString().padStart(2, '0')}:00`;
+
+        return `${hours.toString().padStart(2, '0')}:00:00`;
     }
-    
+
     return null;
 }
 
 /**
- * Formats time for display (e.g., "06:00" -> "6:00 AM")
- * @param timeStr - Time in HH:MM format
+ * Formats time for display (e.g., "06:00:00" -> "6:00 AM", "06:00" -> "6:00 AM")
+ * @param timeStr - Time in HH:MM or HH:MM:SS format
  * @returns Formatted time string
  */
 export function formatTimeForDisplay(timeStr: string): string {
-    const [hours, minutes] = timeStr.split(':').map(Number);
-    
+    // Handle both HH:MM and HH:MM:SS formats
+    const timeParts = timeStr.split(':');
+    const hours = parseInt(timeParts[0]);
+    const minutes = parseInt(timeParts[1]);
+
     if (hours === 0) {
         return `12:${minutes.toString().padStart(2, '0')} AM`;
     } else if (hours < 12) {

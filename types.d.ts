@@ -137,7 +137,7 @@ declare global {
         user_id: string;
         title: string;
         description?: string | null;
-        scheduled_time: string; // HH:MM format
+        scheduled_time: string; // HH:MM:SS format (Supabase TIME type)
         schedule_type: 'once' | 'daily' | 'weekly' | 'custom';
         schedule_pattern?: ISchedulePattern | null;
         target_date?: string | null; // YYYY-MM-DD format for one-time schedules

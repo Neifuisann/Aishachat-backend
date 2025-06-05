@@ -22,8 +22,10 @@ import {
 import { callGeminiVision } from "./vision.ts";
 import { SetVolume } from "./volume_handler.ts";
 import { ManageData } from "./data_manager.ts";
+import { ScheduleManager } from "./schedule_manager.ts";
 import { ReadingManager } from "./reading_handler.ts";
 import { rotateImage180, isValidJpegBase64 } from "./image_utils.ts";
+import { Help } from "./function_help_system.ts";
 
 import {
     getChatHistory,
@@ -129,59 +131,27 @@ CRITICAL TOOL SELECTION RULES:
 2. Do NOT call tools for general conversation or when you can answer directly
 3. When uncertain, ask the user for clarification rather than guessing
 4. Validate all parameters before calling tools
+5. MANDATORY: ALWAYS call Help(functionName) before using any main function to understand parameters and usage
 
-TOOL USAGE PRIORITIES:
-- GetVision: ONLY when user explicitly asks about images/visual content
-- SetVolume: ONLY when user mentions volume/sound level/hearing issues
-- ManageData: For ALL note-taking and persona management tasks
-- ReadingManager: For ALL book reading, reading history, and reading settings tasks
+FUNCTION HELP SYSTEM:
+- Help(functionName="GetVision"): Get detailed guidance before using GetVision
+- Help(functionName="SetVolume"): Get detailed guidance before using SetVolume
+- Help(functionName="ManageData"): Get detailed guidance before using ManageData
+- Help(functionName="ScheduleManager"): Get detailed guidance before using ScheduleManager
+- Help(functionName="ReadingManager"): Get detailed guidance before using ReadingManager
 
-MANAGEDATA MODAL INTERFACE:
-1. First select mode: "Persona" (AI memory), "Notes" (user data), or "Schedule" (reminders/tasks)
-2. Then select action: "Search", "Edit", "Delete", or "List" (Schedule only)
-3. Provide required parameters based on mode/action combination
-
-PERSONA MODE:
-- Search: Get current AI knowledge about user preferences
-- Edit: Update AI's stored knowledge (provide newPersona)
-- Delete: Clear AI's stored knowledge
-
-NOTES MODE:
-- Search: Find user's notes (provide query, optional dateFrom/dateTo)
-- Edit: Add new note (provide body, optional title/imageId) OR update existing note (provide noteId + title/body)
-- Delete: Remove note (provide noteId, ALWAYS confirm first)
-
-SCHEDULE MODE:
-- List: Get all current schedules with current UTC+7 time
-- Search: Find schedules by title/description (provide query)
-- Edit: Add new schedule (provide title, scheduledTime) OR update existing schedule (provide scheduleId + updates)
-- Delete: Remove schedule (provide scheduleId, ALWAYS confirm first)
-
-READINGMANAGER MODAL INTERFACE:
-1. First select mode: "History", "Read", "Search", or "Settings"
-2. Then select appropriate action for each mode
-3. Provide required parameters based on mode/action combination
-
-READING MODES:
-- History: "Check" (get reading progress for a book, provide bookName)
-- Read: "Continue" (from last position), "Start" (from beginning), "GoTo" (specific page, provide pageNumber)
-- Search: "Find" (search keywords in book, provide bookName and keyword)
-- Settings: "Get" (current reading preferences), "Set" (update preferences, provide readingMode and readingAmount)
-
-REQUIRED CONFIRMATIONS:
-- ManageData Notes Delete: ALWAYS confirm before deleting
-- ManageData Notes Edit (update): Confirm changes with user
-- SetVolume: Confirm the volume level
-
-PARAMETER REQUIREMENTS:
-- ManageData: mode and action always required
-- GetVision: provide specific, clear prompts
-- SetVolume: volumeLevel must be 0-100
+TOOL USAGE PRIORITIES & VOICE TRIGGERS:
+- GetVision: "What do you see?", "Look at this", "Describe what's in front of me", "Read the text", "What color is this?"
+- SetVolume: "Turn up the volume", "Make it louder", "I can't hear", "Speak louder", "Volume to 80"
+- ManageData: "Remember this", "Add a note", "Save this info", "Find my notes", "What do you know about me?"
+- ScheduleManager: "Schedule a meeting", "Set a reminder", "What's my schedule?", "Cancel my appointment", "Remind me to..."
+- ReadingManager: "Read me a book", "Continue reading", "Where did I stop?", "Find the word dragon", "Read by paragraphs"
 
 IMPORTANT: 
 - The agent should never 'speak out' the tool output. 
 - The agent dont hallucinations about the function call.
 - The agent wait for function output and response in one single turn.
+- ALWAYS confirm before deleting
 </tool_calling_instructions>
 
 <text_to_speech_format>
@@ -285,17 +255,17 @@ You is now being connected with a person.`;
                             },
                             {
                                 name: "ManageData",
-                                description: "Unified modal interface for managing persona (AI memory), notes (user data), and schedules (reminders/tasks). First select mode ('Persona', 'Notes', or 'Schedule'), then action. Use for all note-taking, persona management, and scheduling tasks.",
+                                description: "Unified modal interface for managing persona (AI memory) and notes (user data). First select mode ('Persona' or 'Notes'), then action. Use for all note-taking and persona management tasks.",
                                 parameters: {
                                     type: "OBJECT",
                                     properties: {
                                         mode: {
                                             type: "STRING",
-                                            description: "Data type to manage: 'Persona' (AI's knowledge about user preferences), 'Notes' (user's personal notes and reminders), or 'Schedule' (time-based reminders and tasks)."
+                                            description: "Data type to manage: 'Persona' (AI's knowledge about user preferences) or 'Notes' (user's personal notes and reminders)."
                                         },
                                         action: {
                                             type: "STRING",
-                                            description: "Action to perform: 'Search' (retrieve/find data), 'Edit' (add/update data), 'Delete' (remove data), or 'List' (Schedule only - get all schedules with current time)."
+                                            description: "Action to perform: 'Search' (retrieve/find data), 'Edit' (add/update data), or 'Delete' (remove data)."
                                         },
                                         query: {
                                             type: "STRING",
@@ -328,22 +298,40 @@ You is now being connected with a person.`;
                                         imageId: {
                                             type: "STRING",
                                             description: "Image ID for Notes Edit (optional, if note relates to captured image)."
+                                        }
+                                    },
+                                    required: ["mode", "action"]
+                                },
+                            },
+                            {
+                                name: "ScheduleManager",
+                                description: "Unified modal interface for schedule and reminder management. First select mode ('List', 'Add', 'Update', 'Delete', 'Search', 'CheckConflict'), then provide required parameters. Use for all scheduling tasks.",
+                                parameters: {
+                                    type: "OBJECT",
+                                    properties: {
+                                        mode: {
+                                            type: "STRING",
+                                            description: "Schedule operation mode: 'List' (get all schedules with current time), 'Add' (create new schedule), 'Update' (modify existing), 'Delete' (remove schedule), 'Search' (find by title/description), 'CheckConflict' (check time conflicts)."
                                         },
                                         scheduleId: {
                                             type: "STRING",
-                                            description: "Schedule ID for Schedule Edit/Delete of existing schedules (get from Schedule List/Search first)."
+                                            description: "Schedule ID for Update/Delete operations (get from List/Search first)."
+                                        },
+                                        title: {
+                                            type: "STRING",
+                                            description: "Schedule title (required for Add, optional for Update). Examples: 'Take a drink', 'Take a walk', 'Doctor appointment'."
                                         },
                                         scheduledTime: {
                                             type: "STRING",
-                                            description: "Time for schedule in natural language (e.g., '6am', '18:30', '7pm') or HH:MM format. Required for Schedule Add/Edit."
+                                            description: "Time for schedule in natural language or HH:MM format (required for Add, optional for Update/CheckConflict). Examples: '6am', '18:30', '7pm'."
                                         },
                                         scheduleType: {
                                             type: "STRING",
-                                            description: "Type of schedule: 'once' (default), 'daily', 'weekly', or 'custom'. Optional for Schedule Add/Edit."
+                                            description: "Type of schedule: 'once' (default), 'daily', 'weekly', or 'custom'. Optional for Add/Update."
                                         },
                                         description: {
                                             type: "STRING",
-                                            description: "Additional description for Schedule Add/Edit (optional)."
+                                            description: "Additional description for the schedule (optional for Add/Update)."
                                         },
                                         schedulePattern: {
                                             type: "OBJECT",
@@ -351,10 +339,14 @@ You is now being connected with a person.`;
                                         },
                                         targetDate: {
                                             type: "STRING",
-                                            description: "Target date for 'once' schedules in YYYY-MM-DD format (optional, defaults to today)."
+                                            description: "Target date for 'once' schedules in YYYY-MM-DD format (optional, defaults to today for Add/CheckConflict)."
+                                        },
+                                        query: {
+                                            type: "STRING",
+                                            description: "Search query for Search mode (required for Search). Search in title and description."
                                         }
                                     },
-                                    required: ["mode", "action"]
+                                    required: ["mode"]
                                 },
                             },
                             {
@@ -393,6 +385,20 @@ You is now being connected with a person.`;
                                         }
                                     },
                                     required: ["mode", "action"]
+                                },
+                            },
+                            {
+                                name: "Help",
+                                description: "Get detailed documentation and step-by-step guidance for any function. MUST be called before using any main function everytime to sure about parameters and usage.",
+                                parameters: {
+                                    type: "OBJECT",
+                                    properties: {
+                                        functionName: {
+                                            type: "STRING",
+                                            description: "Name of the function to get help for. Available functions: GetVision, SetVolume, ManageData, ScheduleManager, ReadingManager"
+                                        }
+                                    },
+                                    required: ["functionName"]
                                 },
                             },
                         ],
@@ -586,7 +592,37 @@ You is now being connected with a person.`;
             if (msg.toolCall?.functionCalls && Array.isArray(msg.toolCall.functionCalls)) {
                 console.log("Gemini => Received Top-Level toolCall:", JSON.stringify(msg.toolCall.functionCalls, null, 2));
                 for (const call of msg.toolCall.functionCalls) {
-                    if (call.name === "GetVision" && call.id) {
+                    // Handle Help Function
+                    if (call.name === "Help" && call.id) {
+                        const functionName = call.args?.functionName;
+                        const helpResult = Help(functionName);
+                        const callId = call.id;
+                        console.log(`*Help (ID: ${callId}) called for function: ${functionName}`);
+
+                        // Send function response back to Gemini Live
+                        if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN) {
+                            const functionResponsePayload = {
+                                functionResponses: [
+                                    {
+                                        id: callId,
+                                        name: "Help",
+                                        response: { result: helpResult.documentation }
+                                    }
+                                ]
+                            };
+                            const functionResponse = { toolResponse: functionResponsePayload };
+                            try {
+                                geminiWs.send(JSON.stringify(functionResponse));
+                                console.log(`Gemini Live => Sent Function Response for Help (ID: ${callId}) for ${functionName}`);
+                            } catch (err) {
+                                console.error(`Failed to send Help function response (ID: ${callId}) to Gemini:`, err);
+                            }
+                        } else {
+                            console.error(`Cannot send Help function response (ID: ${callId}), Gemini WS not open.`);
+                        }
+
+                    // Handle Main Functions
+                    } else if (call.name === "GetVision" && call.id) {
                         let userPrompt = "Describe the image in maximum 10 sentences.";
                         if (call.args?.prompt && typeof call.args.prompt === 'string' && call.args.prompt.trim() !== "") {
                             userPrompt = call.args.prompt.trim();
@@ -711,6 +747,63 @@ You is now being connected with a person.`;
                             }
                         } else {
                             console.error(`Cannot send ManageData function response (ID: ${callId}), Gemini WS not open.`);
+                        }
+
+                    } else if (call.name === "ScheduleManager" && call.id) {
+                        const callId = call.id;
+                        const mode = call.args?.mode;
+                        const scheduleId = call.args?.scheduleId;
+                        const title = call.args?.title;
+                        const scheduledTime = call.args?.scheduledTime;
+                        const scheduleType = call.args?.scheduleType;
+                        const description = call.args?.description;
+                        const schedulePattern = call.args?.schedulePattern;
+                        const targetDate = call.args?.targetDate;
+                        const query = call.args?.query;
+
+                        console.log(`*ScheduleManager (ID: ${callId}) called with args:`, call.args);
+                        let result = { success: false, message: "Unknown error in ScheduleManager." };
+
+                        try {
+                            result = await ScheduleManager(
+                                supabase,
+                                user.user_id,
+                                mode,
+                                scheduleId,
+                                title,
+                                scheduledTime,
+                                scheduleType,
+                                description,
+                                schedulePattern,
+                                targetDate,
+                                query
+                            );
+                            console.log(`ScheduleManager result for ID ${callId}:`, result);
+                        } catch (err) {
+                            console.error(`Error executing ScheduleManager for ID ${callId}:`, err);
+                            result = { success: false, message: err instanceof Error ? err.message : String(err) };
+                        }
+
+                        // Send function response back to Gemini Live
+                        if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN) {
+                            const functionResponsePayload = {
+                                functionResponses: [
+                                    {
+                                        id: callId,
+                                        name: "ScheduleManager",
+                                        response: { result: result.message }
+                                    }
+                                ]
+                            };
+                            const functionResponse = { toolResponse: functionResponsePayload };
+                            try {
+                                geminiWs.send(JSON.stringify(functionResponse));
+                                console.log(`Gemini Live => Sent Function Response for ScheduleManager (ID: ${callId}):`, JSON.stringify(functionResponsePayload));
+                            } catch (err) {
+                                console.error(`Failed to send ScheduleManager function response (ID: ${callId}) to Gemini:`, err);
+                            }
+                        } else {
+                            console.error(`Cannot send ScheduleManager function response (ID: ${callId}), Gemini WS not open.`);
                         }
 
                     } else if (call.name === "ReadingManager" && call.id) {
