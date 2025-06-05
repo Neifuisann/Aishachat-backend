@@ -409,7 +409,7 @@ You is now being connected with a person.`;
 
                 const setupMsg = {
                     setup: {
-                        model: "models/gemini-2.5-flash-preview-native-audio-dialog",
+                        model: "models/gemini-2.0-flash-live-001",
                         generationConfig: {
                             responseModalities: ["AUDIO"],
                             speechConfig: {
@@ -418,10 +418,10 @@ You is now being connected with a person.`;
                                         voiceName: voiceName,
                                     },
                                 },
-                                //language_code: "vi-VN", // Set language
+                                language_code: "vi-VN", // Set language
                             },
                             // Optional: Configure temperature, etc.
-                            temperature: 0.3,
+                            temperature: 1,
                         },
                         systemInstruction: {
                             role: "system",
