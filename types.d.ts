@@ -131,4 +131,35 @@ declare global {
         created_at: string;
         updated_at: string;
     }
+
+    interface ISchedule {
+        schedule_id: string;
+        user_id: string;
+        title: string;
+        description?: string | null;
+        scheduled_time: string; // HH:MM format
+        schedule_type: 'once' | 'daily' | 'weekly' | 'custom';
+        schedule_pattern?: ISchedulePattern | null;
+        target_date?: string | null; // YYYY-MM-DD format for one-time schedules
+        is_active: boolean;
+        created_at: string;
+        updated_at: string;
+    }
+
+    interface ISchedulePattern {
+        // For weekly schedules: array of day numbers (0=Sunday, 1=Monday, etc.)
+        weekdays?: number[];
+        // For custom patterns: skip every N days
+        skip_days?: number;
+        // For custom patterns: specific dates
+        specific_dates?: string[];
+        // End date for recurring schedules
+        end_date?: string | null;
+    }
+
+    interface IScheduleWithCurrentTime {
+        schedules: ISchedule[];
+        current_time_utc7: string; // ISO string in UTC+7
+        current_date_utc7: string; // YYYY-MM-DD format
+    }
 }

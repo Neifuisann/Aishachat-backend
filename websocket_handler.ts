@@ -137,8 +137,8 @@ TOOL USAGE PRIORITIES:
 - ReadingManager: For ALL book reading, reading history, and reading settings tasks
 
 MANAGEDATA MODAL INTERFACE:
-1. First select mode: "Persona" (AI memory) or "Notes" (user data)
-2. Then select action: "Search", "Edit", or "Delete"
+1. First select mode: "Persona" (AI memory), "Notes" (user data), or "Schedule" (reminders/tasks)
+2. Then select action: "Search", "Edit", "Delete", or "List" (Schedule only)
 3. Provide required parameters based on mode/action combination
 
 PERSONA MODE:
@@ -150,6 +150,12 @@ NOTES MODE:
 - Search: Find user's notes (provide query, optional dateFrom/dateTo)
 - Edit: Add new note (provide body, optional title/imageId) OR update existing note (provide noteId + title/body)
 - Delete: Remove note (provide noteId, ALWAYS confirm first)
+
+SCHEDULE MODE:
+- List: Get all current schedules with current UTC+7 time
+- Search: Find schedules by title/description (provide query)
+- Edit: Add new schedule (provide title, scheduledTime) OR update existing schedule (provide scheduleId + updates)
+- Delete: Remove schedule (provide scheduleId, ALWAYS confirm first)
 
 READINGMANAGER MODAL INTERFACE:
 1. First select mode: "History", "Read", "Search", or "Settings"
@@ -279,17 +285,17 @@ You is now being connected with a person.`;
                             },
                             {
                                 name: "ManageData",
-                                description: "Unified modal interface for managing both persona (AI memory) and notes (user data). First select mode ('Persona' or 'Notes'), then action ('Search', 'Edit', 'Delete'). Use for all note-taking and persona management tasks.",
+                                description: "Unified modal interface for managing persona (AI memory), notes (user data), and schedules (reminders/tasks). First select mode ('Persona', 'Notes', or 'Schedule'), then action. Use for all note-taking, persona management, and scheduling tasks.",
                                 parameters: {
                                     type: "OBJECT",
                                     properties: {
                                         mode: {
                                             type: "STRING",
-                                            description: "Data type to manage: 'Persona' (AI's knowledge about user preferences) or 'Notes' (user's personal notes and reminders)."
+                                            description: "Data type to manage: 'Persona' (AI's knowledge about user preferences), 'Notes' (user's personal notes and reminders), or 'Schedule' (time-based reminders and tasks)."
                                         },
                                         action: {
                                             type: "STRING",
-                                            description: "Action to perform: 'Search' (retrieve/find data), 'Edit' (add/update data), or 'Delete' (remove data)."
+                                            description: "Action to perform: 'Search' (retrieve/find data), 'Edit' (add/update data), 'Delete' (remove data), or 'List' (Schedule only - get all schedules with current time)."
                                         },
                                         query: {
                                             type: "STRING",
@@ -322,6 +328,30 @@ You is now being connected with a person.`;
                                         imageId: {
                                             type: "STRING",
                                             description: "Image ID for Notes Edit (optional, if note relates to captured image)."
+                                        },
+                                        scheduleId: {
+                                            type: "STRING",
+                                            description: "Schedule ID for Schedule Edit/Delete of existing schedules (get from Schedule List/Search first)."
+                                        },
+                                        scheduledTime: {
+                                            type: "STRING",
+                                            description: "Time for schedule in natural language (e.g., '6am', '18:30', '7pm') or HH:MM format. Required for Schedule Add/Edit."
+                                        },
+                                        scheduleType: {
+                                            type: "STRING",
+                                            description: "Type of schedule: 'once' (default), 'daily', 'weekly', or 'custom'. Optional for Schedule Add/Edit."
+                                        },
+                                        description: {
+                                            type: "STRING",
+                                            description: "Additional description for Schedule Add/Edit (optional)."
+                                        },
+                                        schedulePattern: {
+                                            type: "OBJECT",
+                                            description: "Complex schedule pattern for 'weekly' or 'custom' types (optional). Example: {weekdays: [1,3,5]} for Mon/Wed/Fri."
+                                        },
+                                        targetDate: {
+                                            type: "STRING",
+                                            description: "Target date for 'once' schedules in YYYY-MM-DD format (optional, defaults to today)."
                                         }
                                     },
                                     required: ["mode", "action"]
