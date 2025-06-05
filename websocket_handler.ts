@@ -25,6 +25,7 @@ import {
     createFlash25Session,
     destroyFlash25Session,
     getFlash25SessionInfo,
+    analyzeImageWithFlash25,
     type DeviceOperationCallbacks
 } from "./flash_handler.ts";
 
@@ -197,10 +198,11 @@ HYBRID TOOL SYSTEM:
   * Data management: "Update my shopping list", "Search my notes", "Delete that reminder"
 
 IMPORTANT:
-- The agent should never 'speak out' the tool output.
 - The agent dont hallucinations about the function call.
 - The agent wait for function output and response in one single turn.
 - For Action function, pass the user's exact command as reported speech
+- Always proactive provide information for user, always make a turn with useful information.
+- Only asking conrfirmation for "Delete" task.
 </tool_calling_instructions>
 
 <text_to_speech_format>
@@ -845,13 +847,11 @@ You is now being connected with a person.`;
                             try {
                                 console.log(`Device => Processing image with Flash 2.5 (${Math.round(processedBase64Jpeg.length * 3 / 4 / 1024)} KB)`);
 
-                                // Send image to Flash 2.5 for analysis
-                                const flash25Result = await processUserActionWithSession(
+                                // Use dedicated image analysis function (no function calling)
+                                const flash25Result = await analyzeImageWithFlash25(
                                     sessionId,
-                                    `Analyze this image: ${pendingVisionCall.prompt}`,
-                                    supabase,
-                                    user.user_id,
-                                    processedBase64Jpeg // Pass image data
+                                    pendingVisionCall.prompt,
+                                    processedBase64Jpeg
                                 );
 
                                 if (flash25Result.success) {

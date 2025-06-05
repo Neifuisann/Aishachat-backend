@@ -260,6 +260,88 @@ You are now ready to process user commands. Remember all interactions in this se
     }
 
     /**
+     * Analyze image directly without function calling (for vision requests)
+     */
+    async analyzeImage(
+        sessionId: string,
+        prompt: string,
+        imageData: string
+    ): Promise<FlashResponse> {
+        const session = this.sessions.get(sessionId);
+        if (!session) {
+            return {
+                success: false,
+                message: "Session not found. Please reconnect to create a new session."
+            };
+        }
+
+        try {
+            // Update last used timestamp
+            session.lastUsed = new Date();
+
+            // Add image and prompt to session history
+            session.contents.push({
+                role: 'user',
+                parts: [
+                    {
+                        text: prompt,
+                    },
+                    {
+                        inlineData: {
+                            mimeType: "image/jpeg",
+                            data: imageData
+                        }
+                    }
+                ],
+            });
+
+            console.log(`Analyzing image in session ${sessionId} with Flash 2.5 (${Math.round(imageData.length * 3 / 4 / 1024)} KB)`);
+
+            // Use Flash 2.5 for direct image analysis (no function calling)
+            const response = await this.ai.models.generateContentStream({
+                model: 'gemini-2.5-flash-preview-05-20',
+                config: {
+                    thinkingConfig: {
+                        thinkingBudget: 500,
+                    },
+                    responseMimeType: 'text/plain',
+                    // No tools for direct image analysis
+                },
+                contents: session.contents,
+            });
+
+            let analysisText = "";
+            for await (const chunk of response) {
+                if (chunk.text) {
+                    analysisText += chunk.text;
+                }
+            }
+
+            // Add Flash 2.5's analysis to session history
+            session.contents.push({
+                role: 'model',
+                parts: [
+                    {
+                        text: analysisText,
+                    },
+                ],
+            });
+
+            return {
+                success: true,
+                message: analysisText || "I can see the image and have analyzed it."
+            };
+
+        } catch (error) {
+            console.error(`Error analyzing image in session ${sessionId}:`, error);
+            return {
+                success: false,
+                message: `Error analyzing image: ${error instanceof Error ? error.message : String(error)}`
+            };
+        }
+    }
+
+    /**
      * Process a user action within an existing session
      */
     async processAction(
@@ -509,6 +591,21 @@ interface FlashResponse {
     success: boolean;
     message: string;
     data?: any;
+}
+
+/**
+ * Analyze image using Flash 2.5 intelligence (for vision requests)
+ * @param sessionId - Live Gemini session ID
+ * @param prompt - Vision prompt/question about the image
+ * @param imageData - Base64 image data
+ * @returns Flash 2.5 image analysis
+ */
+export async function analyzeImageWithFlash25(
+    sessionId: string,
+    prompt: string,
+    imageData: string
+): Promise<FlashResponse> {
+    return await flash25SessionManager.analyzeImage(sessionId, prompt, imageData);
 }
 
 /**
