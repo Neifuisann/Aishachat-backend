@@ -9,8 +9,6 @@ import {
     MIC_SAMPLE_RATE,
     MIC_ACCUM_CHUNK_SIZE,
     TTS_SAMPLE_RATE,
-    isDev,
-    USE_GEMINI_LIVE_VISION,
 } from "./config.ts";
 
 import {
@@ -22,7 +20,13 @@ import {
 import { callGeminiVision } from "./vision.ts";
 import { SetVolume } from "./volume_handler.ts";
 import { rotateImage180, isValidJpegBase64 } from "./image_utils.ts";
-import { processUserAction } from "./flash_handler.ts";
+import {
+    processUserActionWithSession,
+    createFlash25Session,
+    destroyFlash25Session,
+    getFlash25SessionInfo,
+    type DeviceOperationCallbacks
+} from "./flash_handler.ts";
 
 import {
     getChatHistory,
@@ -53,6 +57,58 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
         let retryTimeoutId: ReturnType<typeof setTimeout> | null = null; // To store setTimeout ID
         const maxRetries = 4; // 15s, 30s, 60s, 180s
         const retryDelays = [15000, 30000, 60000, 180000]; // Delays in ms
+
+        // Create unique session ID for this Live Gemini connection
+        const sessionId = `live-${user.user_id}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+        // Create device operation callbacks for Flash 2.5
+        const deviceCallbacks: DeviceOperationCallbacks = {
+            requestPhoto: async (callId: string) => {
+                return new Promise((resolve) => {
+                    if (waitingForImage) {
+                        resolve({ success: false, message: "Already waiting for an image. Please try again later." });
+                        return;
+                    }
+
+                    pendingVisionCall = { prompt: "Flash 2.5 vision request", id: callId };
+                    waitingForImage = true;
+
+                    if (deviceWs.readyState === WSWebSocket.OPEN) {
+                        console.log(`Device => Sending REQUEST.PHOTO (triggered by Flash 2.5 GetVision: ${callId})`);
+                        deviceWs.send(JSON.stringify({ type: "server", msg: "REQUEST.PHOTO" }));
+
+                        // Store the resolve function to call when photo is received
+                        (pendingVisionCall as any).resolve = resolve;
+                    } else {
+                        console.error("Cannot request photo, device WS is not open.");
+                        waitingForImage = false;
+                        pendingVisionCall = null;
+                        resolve({ success: false, message: "Device connection not available for photo capture." });
+                    }
+                });
+            },
+
+            setVolume: async (volumeLevel: number, callId: string) => {
+                console.log(`*SetVolume (ID: ${callId}) called with volume: ${volumeLevel}`);
+
+                if (typeof volumeLevel !== 'number' || volumeLevel < 0 || volumeLevel > 100) {
+                    return { success: false, message: "Invalid volume level. Must be a number between 0 and 100." };
+                }
+
+                try {
+                    const volumeResult = await SetVolume(supabase, user.user_id, volumeLevel);
+                    console.log(`SetVolume result for ID ${callId}:`, volumeResult);
+                    return volumeResult;
+                } catch (err) {
+                    console.error(`Error executing SetVolume for ID ${callId}:`, err);
+                    return { success: false, message: err instanceof Error ? err.message : String(err) };
+                }
+            }
+        };
+
+        // Create Flash 2.5 session for persistent context
+        console.log(`Creating Flash 2.5 session: ${sessionId}`);
+        createFlash25Session(sessionId, user.user_id, deviceCallbacks);
 
         // Microphone data accumulation & filter
         let micAccum = new Uint8Array(0);
@@ -129,10 +185,16 @@ CRITICAL TOOL SELECTION RULES:
 3. When uncertain, ask the user for clarification rather than guessing
 4. Validate all parameters before calling tools
 
-TOOL USAGE PRIORITIES & VOICE TRIGGERS:
-- GetVision: "What do you see?", "Look at this", "Describe what's in front of me", "Read the text", "What color is this?"
-- SetVolume: "Turn up the volume", "Make it louder", "I can't hear", "Speak louder", "Volume to 80"
-- Action: For all other requests like notes, schedules, reading books, reminders, data management
+HYBRID TOOL SYSTEM:
+- GetVision: Use for vision requests ONLY: "What do you see?", "Look at this", "Describe what's in front of me", "Read the text", "What color is this?"
+  * Fast image capture and intelligent analysis through Flash 2.5
+  * Pass specific questions about what you want to know about the image
+- Action: Use for all OTHER requests through Flash 2.5 intelligence:
+  * Volume control: "Turn up the volume", "Make it louder", "I can't hear", "Speak louder", "Volume to 80"
+  * Notes & memory: "Remember this information", "Add a note", "Find my notes", "What do you know about me?"
+  * Schedules & reminders: "Schedule a meeting", "Set a reminder", "What's my schedule today?"
+  * Reading: "Read a book", "Continue reading", "Find a book"
+  * Data management: "Update my shopping list", "Search my notes", "Delete that reminder"
 
 IMPORTANT:
 - The agent should never 'speak out' the tool output.
@@ -214,35 +276,21 @@ You is now being connected with a person.`;
                         functionDeclarations: [
                             {
                                 name: "GetVision",
-                                description: "Captures an image using the device's camera and analyzes it. Use ONLY when user explicitly asks about visual content, images, or what they can see. Very resource intensive - do not use speculatively.",
+                                description: "Captures an image using the device's camera and analyzes it with Flash 2.5 intelligence. Use ONLY when user explicitly asks about visual content, images, or what they can see. Very resource intensive - do not use speculatively.",
                                 parameters: {
                                     type: "OBJECT",
                                     properties: {
                                         prompt: {
                                             type: "STRING",
-                                            description: "A specific, clear question about the image (e.g., 'What color is the object on the table?', 'Is there a person in the image?', 'Read the text in this image'). Be specific about what you want to know."
+                                            description: "The user's exact command in reported speech with no changes. Pass exactly what the user said."
                                         },
                                     },
                                     required: ["prompt"]
                                 },
                             },
                             {
-                                name: "SetVolume",
-                                description: "Adjusts the device volume level. Use ONLY when user explicitly mentions volume, sound level, hearing issues, or asks to make it louder/quieter. Do not use for general audio problems.",
-                                parameters: {
-                                    type: "OBJECT",
-                                    properties: {
-                                        volumeLevel: {
-                                            type: "NUMBER",
-                                            description: "Volume level as a percentage between 0 and 100. Use 100 for maximum volume when user can't hear."
-                                        },
-                                    },
-                                    required: ["volumeLevel"]
-                                },
-                            },
-                            {
                                 name: "Action",
-                                description: "Processes user commands for notes, schedules, reading books, reminders, and data management. Use for all requests that are not vision or volume related.",
+                                description: "Processes user commands for volume control, notes, schedules, reading books, reminders, and data management and all other tasks that you cant do it yourself.",
                                 parameters: {
                                     type: "OBJECT",
                                     properties: {
@@ -446,7 +494,7 @@ You is now being connected with a person.`;
             if (msg.toolCall?.functionCalls && Array.isArray(msg.toolCall.functionCalls)) {
                 console.log("Gemini => Received Top-Level toolCall:", JSON.stringify(msg.toolCall.functionCalls, null, 2));
                 for (const call of msg.toolCall.functionCalls) {
-                    // Handle Main Functions
+                    // Handle GetVision function (fast capture + Flash 2.5 analysis)
                     if (call.name === "GetVision" && call.id) {
                         let userPrompt = "Describe the image in maximum 10 sentences.";
                         if (call.args?.prompt && typeof call.args.prompt === 'string' && call.args.prompt.trim() !== "") {
@@ -462,7 +510,7 @@ You is now being connected with a person.`;
                             pendingVisionCall = { prompt: userPrompt, id: call.id }; // Store prompt and ID
                             waitingForImage = true;
                             if (deviceWs.readyState === WSWebSocket.OPEN) {
-                                console.log("Device => Sending REQUEST.PHOTO (triggered by top-level toolCall)");
+                                console.log("Device => Sending REQUEST.PHOTO (triggered by GetVision)");
                                 deviceWs.send(JSON.stringify({ type: "server", msg: "REQUEST.PHOTO" }));
                             } else {
                                 console.error("Cannot request photo, device WS is not open.");
@@ -470,51 +518,6 @@ You is now being connected with a person.`;
                                 pendingVisionCall = null;
                             }
                         }
-                    } else if (call.name === "SetVolume" && call.id) {
-                        let volumeResult = { success: false, message: "Unknown error setting volume." };
-                        let volumeLevel = call.args?.volumeLevel;
-                        const callId = call.id;
-                        console.log(`*SetVolume (ID: ${callId}) called with args:`, call.args);
-
-                        if (typeof volumeLevel === 'number') {
-                            try {
-                                volumeResult = await SetVolume(supabase, user.user_id, volumeLevel);
-                                console.log(`SetVolume result for ID ${callId}:`, volumeResult);
-                            } catch (err) {
-                                console.error(`Error executing SetVolume for ID ${callId}:`, err);
-                                volumeResult = { success: false, message: err instanceof Error ? err.message : String(err) };
-                            }
-                        } else {
-                            const errorMsg = `Invalid or missing 'volumeLevel' argument for SetVolume (ID: ${callId}). Expected a number.`;
-                            console.error(errorMsg);
-                            volumeResult = { success: false, message: errorMsg };
-                        }
-
-                        // Send function response back to Gemini Live
-                        if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN) {
-                            const functionResponsePayload = {
-                                functionResponses: [
-                                    {
-                                        id: callId, // Use the correct ID
-                                        name: "SetVolume",
-                                        // Send back the result message
-                                        response: { result: volumeResult.message } // Gemini generally expects a simple result string/object
-                                    }
-                                ]
-                            };
-                            const functionResponse = {
-                                toolResponse: functionResponsePayload
-                            };
-                            try {
-                                geminiWs.send(JSON.stringify(functionResponse));
-                                console.log(`Gemini Live => Sent Function Response for SetVolume (ID: ${callId}):`, JSON.stringify(functionResponsePayload));
-                            } catch (err) {
-                                console.error(`Failed to send SetVolume function response (ID: ${callId}) to Gemini:`, err);
-                            }
-                        } else {
-                            console.error(`Cannot send SetVolume function response (ID: ${callId}), Gemini WS not open.`);
-                        }
-
                     } else if (call.name === "Action" && call.id) {
                         const callId = call.id;
                         const userCommand = call.args?.userCommand;
@@ -524,8 +527,8 @@ You is now being connected with a person.`;
 
                         if (typeof userCommand === 'string' && userCommand.trim()) {
                             try {
-                                result = await processUserAction(userCommand.trim(), supabase, user.user_id);
-                                console.log(`Action result for ID ${callId}:`, result);
+                                result = await processUserActionWithSession(sessionId, userCommand.trim(), supabase, user.user_id);
+                                console.log(`Action result for ID ${callId} (session: ${sessionId}):`, result);
                             } catch (err) {
                                 console.error(`Error executing Action for ID ${callId}:`, err);
                                 result = { success: false, message: err instanceof Error ? err.message : String(err) };
@@ -818,8 +821,6 @@ You is now being connected with a person.`;
                         }
 
                         waitingForImage = false; // Mark as received (start processing)
-                        let visionResult = "";
-                        let storagePath: string | null = null;
 
                         // --- START: Rotate Image 180 degrees ---
                         let processedBase64Jpeg = base64Jpeg;
@@ -838,137 +839,63 @@ You is now being connected with a person.`;
                         }
                         // --- END: Rotate Image 180 degrees ---
 
-                        // --- START: Upload to Supabase Storage ---
-                        try {
-                            console.log(`Device => Received image data (${Math.round(processedBase64Jpeg.length * 3 / 4 / 1024)} KB), attempting upload...`);
-                            // Decode Base64 to Buffer for upload
-                            const imageBuffer = Buffer.from(processedBase64Jpeg, 'base64');
-                            // Generate a unique path/filename within the 'private' folder
-                            const fileName = `private/${user.user_id}/${Date.now()}.jpg`; // <-- Added 'private/' prefix
-                            const bucketName = 'images'; // Define evir bucket name
+                        // Process image with Flash 2.5 for intelligent analysis
+                        let visionResult = "";
+                        if (pendingVisionCall) {
+                            try {
+                                console.log(`Device => Processing image with Flash 2.5 (${Math.round(processedBase64Jpeg.length * 3 / 4 / 1024)} KB)`);
 
-                            const { data: uploadData, error: uploadError } = await supabase
-                                .storage
-                                .from(bucketName)
-                                .upload(fileName, imageBuffer, {
-                                    contentType: 'image/jpeg',
-                                    upsert: true // Overwrite if file with same name exists (optional)
-                                });
+                                // Send image to Flash 2.5 for analysis
+                                const flash25Result = await processUserActionWithSession(
+                                    sessionId,
+                                    `Analyze this image: ${pendingVisionCall.prompt}`,
+                                    supabase,
+                                    user.user_id,
+                                    processedBase64Jpeg // Pass image data
+                                );
 
-                            if (uploadError) {
-                                console.error(`Supabase Storage Error: Failed to upload image to ${bucketName}/${fileName}`, uploadError);
-                                // Proceed without storage path, but still call vision
-                                photoCaptureFailed = true; // Indicate a failure occurred in the process
-                            } else if (uploadData) {
-                                storagePath = uploadData.path;
-                                console.log(`Supabase Storage: Image successfully uploaded to ${bucketName}/${storagePath}`);
-                                // Optionally get public URL (requires bucket to be public or use signed URLs)
-                                // const { data: urlData } = supabase.storage.from(bucketName).getPublicUrl(storagePath);
-                                // console.log("Public URL:", urlData?.publicUrl);
+                                if (flash25Result.success) {
+                                    visionResult = flash25Result.message;
+                                    console.log("Flash 2.5 Vision Analysis =>", visionResult);
+                                } else {
+                                    visionResult = "Failed to analyze image with Flash 2.5: " + flash25Result.message;
+                                    console.error("Flash 2.5 Vision Error =>", flash25Result.message);
+                                }
+
+                            } catch (error) {
+                                console.error("Error processing image with Flash 2.5:", error);
+                                visionResult = "Failed to analyze image due to processing error.";
                             }
-                        } catch (storageErr) {
-                            console.error("Supabase Storage: Unexpected error during upload:", storageErr);
-                            photoCaptureFailed = true; // Indicate a failure occurred
+                        } else {
+                            visionResult = "No pending vision call found.";
                         }
-                        // --- END: Upload to Supabase Storage ---
 
-
-                        // Choose between direct Gemini Live vision or external API
-                        if (!photoCaptureFailed) {
-                            if (USE_GEMINI_LIVE_VISION) {
-                                // Direct method: Send image through Gemini Live WebSocket
-                                console.log(`Using Gemini Live direct vision with prompt: "${pendingVisionCall.prompt}"`);
-                                try {
-                                    if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN) {
-                                        // Send the image directly through Gemini Live WebSocket
-                                        const imageMessage = {
-                                            realtime_input: {
-                                                media_chunks: [{
-                                                    data: processedBase64Jpeg,
-                                                    mime_type: "image/jpeg"
-                                                }]
-                                            }
-                                        };
-
-                                        // Send the image
-                                        geminiWs.send(JSON.stringify(imageMessage));
-                                        console.log("Gemini Live => Sent image directly through WebSocket");
-
-                                        // Send the prompt as a text message
-                                        const promptMessage = {
-                                            clientContent: {
-                                                turns: [{
-                                                    role: "user",
-                                                    parts: [{ text: pendingVisionCall.prompt }]
-                                                }],
-                                                turnComplete: true
-                                            }
-                                        };
-
-                                        geminiWs.send(JSON.stringify(promptMessage));
-                                        console.log("Gemini Live => Sent vision prompt directly");
-
-                                        // For direct method, we don't need to send function response
-                                        // Gemini Live will respond directly with the analysis
-                                        visionResult = "Image sent directly to Gemini Live for analysis";
-
-                                    } else {
-                                        console.error("Cannot send image directly, Gemini WS not open");
-                                        visionResult = "Failed to send image directly - Gemini connection not available";
+                        // Send function response back to Gemini Live
+                        if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN && pendingVisionCall?.id) {
+                            const functionResponsePayload = {
+                                functionResponses: [
+                                    {
+                                        id: pendingVisionCall.id,
+                                        name: "GetVision",
+                                        response: { result: visionResult }
                                     }
-                                } catch (directErr) {
-                                    console.error("Error sending image directly to Gemini Live:", directErr);
-                                    visionResult = "Failed to send image directly to Gemini Live";
-                                }
-                            } else {
-                                // External method: Use external Gemini Vision API (current implementation)
-                                console.log(`Using external Gemini Vision API with prompt: "${pendingVisionCall.prompt}"`);
-                                visionResult = await callGeminiVision(processedBase64Jpeg, pendingVisionCall.prompt);
-                                console.log("Gemini Vision Result =>", visionResult);
+                                ]
+                            };
+                            const functionResponse = {
+                                toolResponse: functionResponsePayload
+                            };
+                            try {
+                                geminiWs.send(JSON.stringify(functionResponse));
+                                console.log("Gemini Live => Sent Flash 2.5 Vision Response:", JSON.stringify(functionResponsePayload));
+                            } catch (err) {
+                                console.error("Failed to send Flash 2.5 vision response to Gemini:", err);
                             }
                         } else {
-                            // If upload failed
-                            visionResult = "Failed to upload image and get vision description. Please try again.";
-                            console.log("Gemini Vision Result => Skipped due to upload failure.");
+                            console.error("Cannot send vision response, Gemini WS not open or no pending call ID.");
                         }
 
-
-                        // Send function response back to Gemini Live (only for external API method)
-                        if (!USE_GEMINI_LIVE_VISION && isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN) {
-                            if (pendingVisionCall.id) {
-                                const functionResponsePayload = {
-                                    functionResponses: [
-                                        {
-                                            id: pendingVisionCall.id, // Use the stored ID
-                                            name: "GetVision",
-                                            // Include vision result in the response
-                                            response: { result: visionResult } // Optionally add storagePath here if needed by LLM
-                                        }
-                                    ]
-                                };
-                                console.log("Gemini Live => Preparing Function Response with ID:", pendingVisionCall.id);
-
-                                const functionResponse = {
-                                    toolResponse: functionResponsePayload
-                                };
-
-                                try {
-                                    geminiWs.send(JSON.stringify(functionResponse));
-                                    console.log("Gemini Live => Sent Function Response:", JSON.stringify(functionResponsePayload));
-                                } catch (err) {
-                                    console.error("Failed to send function response to Gemini:", err);
-                                }
-                            } else {
-                                console.error("Error: Attempted to send function response but pendingVisionCall.id was missing. Vision result:", visionResult);
-                            }
-                        } else if (USE_GEMINI_LIVE_VISION) {
-                            console.log("Gemini Live => Using direct vision method, no function response needed");
-                        } else {
-                            console.error("Cannot send function response, Gemini WS not open.");
-                        }
-                        // Clear the pending call regardless of send success
+                        // Clear the pending call
                         pendingVisionCall = null;
-                        photoCaptureFailed = false; // Reset failure flag for next attempt
 
                     } // --- End Handle Image Data ---
 
@@ -1105,6 +1032,10 @@ You is now being connected with a person.`;
                 geminiWs.close(1000, "Device disconnected");
             }
             geminiWs = null; // Ensure reference is cleared
+
+            // Destroy Flash 2.5 session
+            console.log(`Destroying Flash 2.5 session: ${sessionId}`);
+            destroyFlash25Session(sessionId);
         });
 
         // ---------------------------------------------------------------------------

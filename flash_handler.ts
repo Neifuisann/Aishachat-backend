@@ -6,43 +6,40 @@ import { ScheduleManager } from "./schedule_manager.ts";
 import { ReadingManager } from "./reading_handler.ts";
 
 /**
- * Flash 2.5 API handler for processing user commands and executing appropriate tools
- * This handler receives user commands from Live Gemini and processes them using Flash 2.5
- * with thinking budget to choose and execute the correct tools.
+ * Device operation callbacks interface
  */
-
-interface FlashResponse {
-    success: boolean;
-    message: string;
-    data?: any;
+export interface DeviceOperationCallbacks {
+    requestVision: (prompt: string, callId: string) => Promise<{ success: boolean; message: string }>;
+    setVolume: (volumeLevel: number, callId: string) => Promise<{ success: boolean; message: string }>;
 }
 
 /**
- * Process user action using Gemini Flash 2.5 with function calling
- * @param userCommand - The user command in reported speech
- * @param supabase - Supabase client
- * @param userId - User ID
- * @returns Response from Flash 2.5 processing
+ * Flash 2.5 Session Manager
+ * Maintains persistent chat sessions with full history for each Live Gemini connection
  */
-export async function processUserAction(
-    userCommand: string,
-    supabase: SupabaseClient,
-    userId: string
-): Promise<FlashResponse> {
-    try {
+class Flash25SessionManager {
+    private sessions: Map<string, any> = new Map();
+    private ai: any;
+    private tools: any[];
+    private config: any;
+
+    constructor() {
+        this.initializeAI();
+    }
+
+    private initializeAI() {
         const apiKey = apiKeyManager.getCurrentKey();
         if (!apiKey) {
-            return {
-                success: false,
-                message: "API key not available"
-            };
+            throw new Error("API key not available");
         }
 
-        const ai = new GoogleGenAI({
-            apiKey: apiKey,
-        });
+        this.ai = new GoogleGenAI({ apiKey });
+        this.setupTools();
+        this.setupConfig();
+    }
 
-        const tools = [
+    private setupTools() {
+        this.tools = [
             {
                 functionDeclarations: [
                     {
@@ -178,21 +175,43 @@ export async function processUserAction(
                                 }
                             },
                         },
+                    },
+                    {
+                        name: "SetVolume",
+                        description: "Adjusts the device volume level. Use ONLY when user explicitly mentions volume, sound level, hearing issues, or asks to make it louder/quieter. Do not use for general audio problems.",
+                        parameters: {
+                            type: Type.OBJECT,
+                            required: ["volumeLevel"],
+                            properties: {
+                                volumeLevel: {
+                                    type: Type.NUMBER,
+                                    description: "Volume level as a percentage between 0 and 100. Use 100 for maximum volume when user can't hear."
+                                }
+                            }
+                        }
                     }
                 ]
             }
         ];
+    }
 
-        const config = {
+    private setupConfig() {
+        this.config = {
             thinkingConfig: {
                 thinkingBudget: 500,
             },
-            tools,
+            tools: this.tools,
             responseMimeType: 'text/plain',
         };
+    }
 
-        const model = 'gemini-2.5-flash-preview-05-20';
-        const contents = [
+    /**
+     * Create a new Flash 2.5 session for a Live Gemini connection
+     */
+    createSession(sessionId: string, userId: string, deviceCallbacks?: DeviceOperationCallbacks): void {
+        console.log(`Creating Flash 2.5 session for Live session: ${sessionId}`);
+
+        const initialContents = [
             {
                 role: 'user',
                 parts: [
@@ -203,6 +222,8 @@ AVAILABLE FUNCTIONS:
 1. ManageData - For notes and persona management
 2. ScheduleManager - For schedule and reminder management
 3. ReadingManager - For book reading system
+4. GetVision - For capturing and analyzing images from the device camera
+5. SetVolume - For adjusting device volume level
 
 INSTRUCTIONS:
 - Analyze the user command carefully
@@ -212,107 +233,356 @@ INSTRUCTIONS:
 - If multiple functions are needed, call them in sequence
 - Always confirm before deleting anything
 - Respond in Vietnamese if the user speaks Vietnamese
+- Maintain context and remember previous conversations in this session
+- Use GetVision only when user explicitly asks about visual content
+- Use SetVolume only when user mentions volume, hearing, or sound issues
 
-USER COMMAND: "${userCommand}"
+SESSION INFO:
+- Session ID: ${sessionId}
+- User ID: ${userId}
+- Session started at: ${new Date().toISOString()}
 
-Process this command and execute the appropriate function(s).`,
+You are now ready to process user commands. Remember all interactions in this session.`,
                     },
                 ],
             },
         ];
 
-        const response = await ai.models.generateContentStream({
-            model,
-            config,
-            contents,
+        this.sessions.set(sessionId, {
+            userId,
+            contents: initialContents,
+            createdAt: new Date(),
+            lastUsed: new Date(),
+            deviceCallbacks
         });
 
-        let functionCalls: any[] = [];
-        let textResponse = "";
+        console.log(`Flash 2.5 session ${sessionId} created successfully`);
+    }
 
-        for await (const chunk of response) {
-            if (chunk.functionCalls && chunk.functionCalls.length > 0) {
-                functionCalls.push(...chunk.functionCalls);
-            }
-            if (chunk.text) {
-                textResponse += chunk.text;
-            }
+    /**
+     * Process a user action within an existing session
+     */
+    async processAction(
+        sessionId: string,
+        userCommand: string,
+        supabase: SupabaseClient,
+        imageData?: string
+    ): Promise<FlashResponse> {
+        const session = this.sessions.get(sessionId);
+        if (!session) {
+            return {
+                success: false,
+                message: "Session not found. Please reconnect to create a new session."
+            };
         }
 
-        // Handle function calls
-        if (functionCalls.length > 0) {
-            const functionResults: any[] = [];
+        try {
+            // Update last used timestamp
+            session.lastUsed = new Date();
 
-            for (const call of functionCalls) {
-                let functionResult: any;
+            // Add user command to session history (with optional image)
+            const userParts: any[] = [
+                {
+                    text: userCommand,
+                }
+            ];
 
-                if (call.name === "ManageData") {
-                    const args = call.args;
-                    functionResult = await ManageData(
-                        supabase,
-                        userId,
-                        args.mode,
-                        args.action,
-                        args.query,
-                        args.noteId,
-                        args.title,
-                        args.body,
-                        args.newPersona,
-                        args.dateFrom,
-                        args.dateTo,
-                        args.imageId
-                    );
-                } else if (call.name === "ScheduleManager") {
-                    const args = call.args;
-                    functionResult = await ScheduleManager(
-                        supabase,
-                        userId,
-                        args.mode,
-                        args.scheduleId,
-                        args.title,
-                        args.scheduledTime,
-                        args.scheduleType,
-                        args.description,
-                        args.schedulePattern,
-                        args.targetDate,
-                        args.query
-                    );
-                } else if (call.name === "ReadingManager") {
-                    const args = call.args;
-                    functionResult = await ReadingManager(
-                        supabase,
-                        userId,
-                        args.mode,
-                        args.action,
-                        args.bookName,
-                        args.pageNumber,
-                        args.keyword,
-                        args.readingMode,
-                        args.readingAmount
-                    );
+            // Add image if provided
+            if (imageData) {
+                userParts.push({
+                    inlineData: {
+                        mimeType: "image/jpeg",
+                        data: imageData
+                    }
+                });
+                console.log(`Added image data to Flash 2.5 session ${sessionId} (${Math.round(imageData.length * 3 / 4 / 1024)} KB)`);
+            }
+
+            session.contents.push({
+                role: 'user',
+                parts: userParts,
+            });
+
+            console.log(`Processing action in session ${sessionId}: "${userCommand}"`);
+
+            const response = await this.ai.models.generateContentStream({
+                model: 'gemini-2.5-flash-preview-05-20',
+                config: this.config,
+                contents: session.contents,
+            });
+
+            let functionCalls: any[] = [];
+            let textResponse = "";
+
+            for await (const chunk of response) {
+                if (chunk.functionCalls && chunk.functionCalls.length > 0) {
+                    functionCalls.push(...chunk.functionCalls);
+                }
+                if (chunk.text) {
+                    textResponse += chunk.text;
+                }
+            }
+
+            // Handle function calls
+            if (functionCalls.length > 0) {
+                const functionResults: any[] = [];
+
+                for (const call of functionCalls) {
+                    let functionResult: any;
+
+                    if (call.name === "ManageData") {
+                        const args = call.args;
+                        functionResult = await ManageData(
+                            supabase,
+                            session.userId,
+                            args.mode,
+                            args.action,
+                            args.query,
+                            args.noteId,
+                            args.title,
+                            args.body,
+                            args.newPersona,
+                            args.dateFrom,
+                            args.dateTo,
+                            args.imageId
+                        );
+                    } else if (call.name === "ScheduleManager") {
+                        const args = call.args;
+                        functionResult = await ScheduleManager(
+                            supabase,
+                            session.userId,
+                            args.mode,
+                            args.scheduleId,
+                            args.title,
+                            args.scheduledTime,
+                            args.scheduleType,
+                            args.description,
+                            args.schedulePattern,
+                            args.targetDate,
+                            args.query
+                        );
+                    } else if (call.name === "ReadingManager") {
+                        const args = call.args;
+                        functionResult = await ReadingManager(
+                            supabase,
+                            session.userId,
+                            args.mode,
+                            args.action,
+                            args.bookName,
+                            args.pageNumber,
+                            args.keyword,
+                            args.readingMode,
+                            args.readingAmount
+                        );
+                    } else if (call.name === "SetVolume") {
+                        const args = call.args;
+                        if (session.deviceCallbacks?.setVolume) {
+                            functionResult = await session.deviceCallbacks.setVolume(
+                                args.volumeLevel,
+                                `volume-${Date.now()}`
+                            );
+                        } else {
+                            functionResult = {
+                                success: false,
+                                message: "Volume control not available - device callbacks not configured"
+                            };
+                        }
+                    }
+
+                    functionResults.push({
+                        name: call.name,
+                        result: functionResult
+                    });
                 }
 
-                functionResults.push({
-                    name: call.name,
-                    result: functionResult
+                // Add function results to session history for context
+                session.contents.push({
+                    role: 'model',
+                    parts: [
+                        {
+                            text: `Function calls executed: ${functionResults.map(r => `${r.name}: ${r.result?.message || 'completed'}`).join('; ')}`,
+                        },
+                    ],
                 });
+
+                return {
+                    success: true,
+                    message: functionResults.map(r => r.result?.message || "Function executed").join("; "),
+                    data: functionResults
+                };
+            } else {
+                // Add text response to session history
+                session.contents.push({
+                    role: 'model',
+                    parts: [
+                        {
+                            text: textResponse,
+                        },
+                    ],
+                });
+
+                return {
+                    success: true,
+                    message: textResponse || "I understand your request but couldn't determine the appropriate action to take."
+                };
             }
 
+        } catch (error) {
+            console.error(`Error in Flash 2.5 session ${sessionId}:`, error);
             return {
-                success: true,
-                message: functionResults.map(r => r.result?.message || "Function executed").join("; "),
-                data: functionResults
-            };
-        } else {
-            // No function calls, just return the text response
-            return {
-                success: true,
-                message: textResponse || "I understand your request but couldn't determine the appropriate action to take."
+                success: false,
+                message: `Error processing action: ${error instanceof Error ? error.message : String(error)}`
             };
         }
+    }
 
+    /**
+     * Destroy a Flash 2.5 session when Live Gemini disconnects
+     */
+    destroySession(sessionId: string): void {
+        const session = this.sessions.get(sessionId);
+        if (session) {
+            const duration = new Date().getTime() - session.createdAt.getTime();
+            console.log(`Destroying Flash 2.5 session ${sessionId} (duration: ${Math.round(duration / 1000)}s, messages: ${session.contents.length})`);
+            this.sessions.delete(sessionId);
+        } else {
+            console.log(`Flash 2.5 session ${sessionId} not found for destruction`);
+        }
+    }
+
+    /**
+     * Get session info for debugging
+     */
+    getSessionInfo(sessionId: string): any {
+        const session = this.sessions.get(sessionId);
+        if (!session) return null;
+
+        return {
+            sessionId,
+            userId: session.userId,
+            createdAt: session.createdAt,
+            lastUsed: session.lastUsed,
+            messageCount: session.contents.length,
+            duration: new Date().getTime() - session.createdAt.getTime()
+        };
+    }
+
+    /**
+     * Get all active sessions (for debugging)
+     */
+    getAllSessions(): any[] {
+        return Array.from(this.sessions.keys()).map(sessionId => this.getSessionInfo(sessionId));
+    }
+
+    /**
+     * Clean up old sessions (optional maintenance)
+     */
+    cleanupOldSessions(maxAgeHours: number = 24): void {
+        const cutoff = new Date().getTime() - (maxAgeHours * 60 * 60 * 1000);
+        let cleaned = 0;
+
+        for (const [sessionId, session] of this.sessions.entries()) {
+            if (session.lastUsed.getTime() < cutoff) {
+                this.destroySession(sessionId);
+                cleaned++;
+            }
+        }
+
+        if (cleaned > 0) {
+            console.log(`Cleaned up ${cleaned} old Flash 2.5 sessions`);
+        }
+    }
+}
+
+// Create global session manager instance
+const flash25SessionManager = new Flash25SessionManager();
+
+export { flash25SessionManager };
+
+/**
+ * Flash 2.5 API handler for processing user commands and executing appropriate tools
+ * This handler receives user commands from Live Gemini and processes them using Flash 2.5
+ * with thinking budget to choose and execute the correct tools.
+ */
+
+interface FlashResponse {
+    success: boolean;
+    message: string;
+    data?: any;
+}
+
+/**
+ * Process user action using persistent Flash 2.5 session
+ * @param sessionId - Live Gemini session ID
+ * @param userCommand - The user command in reported speech
+ * @param supabase - Supabase client
+ * @param userId - User ID
+ * @param imageData - Optional base64 image data for vision analysis
+ * @returns Response from Flash 2.5 processing
+ */
+export async function processUserActionWithSession(
+    sessionId: string,
+    userCommand: string,
+    supabase: SupabaseClient,
+    userId: string,
+    imageData?: string
+): Promise<FlashResponse> {
+    return await flash25SessionManager.processAction(sessionId, userCommand, supabase, imageData);
+}
+
+/**
+ * Create a new Flash 2.5 session for a Live Gemini connection
+ * @param sessionId - Live Gemini session ID
+ * @param userId - User ID
+ * @param deviceCallbacks - Optional device operation callbacks for vision and volume
+ */
+export function createFlash25Session(sessionId: string, userId: string, deviceCallbacks?: DeviceOperationCallbacks): void {
+    flash25SessionManager.createSession(sessionId, userId, deviceCallbacks);
+}
+
+/**
+ * Destroy a Flash 2.5 session when Live Gemini disconnects
+ * @param sessionId - Live Gemini session ID
+ */
+export function destroyFlash25Session(sessionId: string): void {
+    flash25SessionManager.destroySession(sessionId);
+}
+
+/**
+ * Get Flash 2.5 session info for debugging
+ * @param sessionId - Live Gemini session ID
+ */
+export function getFlash25SessionInfo(sessionId: string): any {
+    return flash25SessionManager.getSessionInfo(sessionId);
+}
+
+/**
+ * Get all active Flash 2.5 sessions for debugging
+ */
+export function getAllFlash25Sessions(): any[] {
+    return flash25SessionManager.getAllSessions();
+}
+
+/**
+ * Legacy function for backward compatibility - creates temporary session
+ * @deprecated Use processUserActionWithSession instead
+ */
+export async function processUserAction(
+    userCommand: string,
+    supabase: SupabaseClient,
+    userId: string
+): Promise<FlashResponse> {
+    // Create temporary session for legacy compatibility
+    const tempSessionId = `temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+    try {
+        flash25SessionManager.createSession(tempSessionId, userId);
+        const result = await flash25SessionManager.processAction(tempSessionId, userCommand, supabase);
+        flash25SessionManager.destroySession(tempSessionId);
+        return result;
     } catch (error) {
-        console.error("Error in processUserAction:", error);
+        flash25SessionManager.destroySession(tempSessionId);
+        console.error("Error in legacy processUserAction:", error);
         return {
             success: false,
             message: `Error processing action: ${error instanceof Error ? error.message : String(error)}`
