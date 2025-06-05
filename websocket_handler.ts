@@ -21,11 +21,8 @@ import {
 
 import { callGeminiVision } from "./vision.ts";
 import { SetVolume } from "./volume_handler.ts";
-import { ManageData } from "./data_manager.ts";
-import { ScheduleManager } from "./schedule_manager.ts";
-import { ReadingManager } from "./reading_handler.ts";
 import { rotateImage180, isValidJpegBase64 } from "./image_utils.ts";
-import { Help } from "./function_help_system.ts";
+import { processUserAction } from "./flash_handler.ts";
 
 import {
     getChatHistory,
@@ -131,28 +128,17 @@ CRITICAL TOOL SELECTION RULES:
 2. Do NOT call tools for general conversation or when you can answer directly
 3. When uncertain, ask the user for clarification rather than guessing
 4. Validate all parameters before calling tools
-5. MANDATORY: ALWAYS call Help(functionName) before using any main function to understand parameters and usage
-
-FUNCTION HELP SYSTEM:
-- Help(functionName="GetVision"): Get detailed guidance before using GetVision
-- Help(functionName="SetVolume"): Get detailed guidance before using SetVolume
-- Help(functionName="ManageData"): Get detailed guidance before using ManageData
-- Help(functionName="ScheduleManager"): Get detailed guidance before using ScheduleManager
-- Help(functionName="ReadingManager"): Get detailed guidance before using ReadingManager
 
 TOOL USAGE PRIORITIES & VOICE TRIGGERS:
 - GetVision: "What do you see?", "Look at this", "Describe what's in front of me", "Read the text", "What color is this?"
 - SetVolume: "Turn up the volume", "Make it louder", "I can't hear", "Speak louder", "Volume to 80"
-- ManageData: "Remember this", "Add a note", "Save this info", "Find my notes", "What do you know about me?"
-- ScheduleManager: "Schedule a meeting", "Set a reminder", "What's my schedule?", "Cancel my appointment", "Remind me to..."
-- ReadingManager: "Read me a book", "Continue reading", "Where did I stop?", "Find the word dragon", "Read by paragraphs"
+- Action: For all other requests like notes, schedules, reading books, reminders, data management
 
-IMPORTANT: 
-- The agent should never 'speak out' the tool output. 
+IMPORTANT:
+- The agent should never 'speak out' the tool output.
 - The agent dont hallucinations about the function call.
 - The agent wait for function output and response in one single turn.
-- ALWAYS confirm before deleting
-- ALWAYS try say the function output for the user to hear without asking more if you can.
+- For Action function, pass the user's exact command as reported speech
 </tool_calling_instructions>
 
 <text_to_speech_format>
@@ -255,153 +241,20 @@ You is now being connected with a person.`;
                                 },
                             },
                             {
-                                name: "ManageData",
-                                description: "Unified modal interface for managing persona (AI memory) and notes (user data). First select mode ('Persona' or 'Notes'), then action. Use for all note-taking and persona management tasks.",
+                                name: "Action",
+                                description: "Processes user commands for notes, schedules, reading books, reminders, and data management. Use for all requests that are not vision or volume related.",
                                 parameters: {
                                     type: "OBJECT",
                                     properties: {
-                                        mode: {
+                                        userCommand: {
                                             type: "STRING",
-                                            description: "Data type to manage: 'Persona' (AI's knowledge about user preferences) or 'Notes' (user's personal notes and reminders)."
+                                            description: "The user's exact command in reported speech with no changes. Pass exactly what the user said."
                                         },
-                                        action: {
-                                            type: "STRING",
-                                            description: "Action to perform: 'Search' (retrieve/find data), 'Edit' (add/update data), or 'Delete' (remove data)."
-                                        },
-                                        query: {
-                                            type: "STRING",
-                                            description: "Search keywords for Notes Search (e.g., 'shopping list', 'meeting notes')."
-                                        },
-                                        noteId: {
-                                            type: "STRING",
-                                            description: "Note ID for Notes Edit/Delete of existing notes (get from Notes Search first)."
-                                        },
-                                        title: {
-                                            type: "STRING",
-                                            description: "Note title for Notes Edit (optional, auto-generated if not provided)."
-                                        },
-                                        body: {
-                                            type: "STRING",
-                                            description: "Note content for Notes Edit (required when adding new note)."
-                                        },
-                                        newPersona: {
-                                            type: "STRING",
-                                            description: "Complete persona description for Persona Edit (e.g., 'likes pizza, dislikes loud noises, prefers morning conversations')."
-                                        },
-                                        dateFrom: {
-                                            type: "STRING",
-                                            description: "Start date for Notes Search (optional, ISO format: '2024-01-01T00:00:00Z')."
-                                        },
-                                        dateTo: {
-                                            type: "STRING",
-                                            description: "End date for Notes Search (optional, ISO format: '2024-12-31T23:59:59Z')."
-                                        },
-                                        imageId: {
-                                            type: "STRING",
-                                            description: "Image ID for Notes Edit (optional, if note relates to captured image)."
-                                        }
                                     },
-                                    required: ["mode", "action"]
+                                    required: ["userCommand"]
                                 },
                             },
-                            {
-                                name: "ScheduleManager",
-                                description: "Unified modal interface for schedule and reminder management. First select mode ('List', 'Add', 'Update', 'Delete', 'Search', 'CheckConflict'), then provide required parameters. Use for all scheduling tasks.",
-                                parameters: {
-                                    type: "OBJECT",
-                                    properties: {
-                                        mode: {
-                                            type: "STRING",
-                                            description: "Schedule operation mode: 'List' (get all schedules with current time then read all the schedules aloud), 'Add' (create new schedule), 'Update' (modify existing), 'Delete' (remove schedule), 'Search' (find by title/description), 'CheckConflict' (check time conflicts)."
-                                        },
-                                        scheduleId: {
-                                            type: "STRING",
-                                            description: "Schedule ID for Update/Delete operations (get from List/Search first)."
-                                        },
-                                        title: {
-                                            type: "STRING",
-                                            description: "Schedule title (required for Add, optional for Update). Examples: 'Take a drink', 'Take a walk', 'Doctor appointment'."
-                                        },
-                                        scheduledTime: {
-                                            type: "STRING",
-                                            description: "Time for schedule in natural language or HH:MM format (required for Add, optional for Update/CheckConflict). Examples: '6am', '18:30', '7pm'."
-                                        },
-                                        scheduleType: {
-                                            type: "STRING",
-                                            description: "Type of schedule: 'once' (default), 'daily', 'weekly', or 'custom'. Optional for Add/Update."
-                                        },
-                                        description: {
-                                            type: "STRING",
-                                            description: "Additional description for the schedule (optional for Add/Update)."
-                                        },
-                                        schedulePattern: {
-                                            type: "OBJECT",
-                                            description: "Complex schedule pattern for 'weekly' or 'custom' types (optional). Example: {weekdays: [1,3,5]} for Mon/Wed/Fri."
-                                        },
-                                        targetDate: {
-                                            type: "STRING",
-                                            description: "Target date for 'once' schedules in YYYY-MM-DD format (optional, defaults to today for Add/CheckConflict)."
-                                        },
-                                        query: {
-                                            type: "STRING",
-                                            description: "Search query for Search mode (required for Search). Search in title and description."
-                                        }
-                                    },
-                                    required: ["mode"]
-                                },
-                            },
-                            {
-                                name: "ReadingManager",
-                                description: "Unified modal interface for book reading system. Supports reading history, book content, search within books, and reading settings management. Use for all book-related tasks.",
-                                parameters: {
-                                    type: "OBJECT",
-                                    properties: {
-                                        mode: {
-                                            type: "STRING",
-                                            description: "Reading operation mode: 'History' (check reading progress), 'Read' (read book content), 'Search' (find keywords in book), or 'Settings' (manage reading preferences)."
-                                        },
-                                        action: {
-                                            type: "STRING",
-                                            description: "Action to perform within the selected mode. History: 'Check'. Read: 'Continue', 'Start', 'GoTo'. Search: 'Find'. Settings: 'Get', 'Set'."
-                                        },
-                                        bookName: {
-                                            type: "STRING",
-                                            description: "Name of the book (without .txt extension). Required for History, Read, and Search modes."
-                                        },
-                                        pageNumber: {
-                                            type: "NUMBER",
-                                            description: "Page number for Read mode with 'GoTo' action (1-based indexing)."
-                                        },
-                                        keyword: {
-                                            type: "STRING",
-                                            description: "Search keyword for Search mode 'Find' action."
-                                        },
-                                        readingMode: {
-                                            type: "STRING",
-                                            description: "Reading mode for Settings 'Set' action: 'paragraphs', 'sentences', or 'fullpage'."
-                                        },
-                                        readingAmount: {
-                                            type: "NUMBER",
-                                            description: "Number of paragraphs or sentences to read at once (for Settings 'Set' action, not needed for 'fullpage' mode)."
-                                        }
-                                    },
-                                    required: ["mode", "action"]
-                                },
-                            },
-                            {
-                                name: "Help",
-                                description: "Get detailed documentation and step-by-step guidance for any function. MUST be called before using any main function everytime to sure about parameters and usage.",
-                                parameters: {
-                                    type: "OBJECT",
-                                    properties: {
-                                        functionName: {
-                                            type: "STRING",
-                                            description: "Name of the function to get help for. Available functions: GetVision, SetVolume, ManageData, ScheduleManager, ReadingManager"
-                                        }
-                                    },
-                                    required: ["functionName"]
-                                },
-                            },
+
                         ],
                         googleSearch: {}
                     }
@@ -593,37 +446,8 @@ You is now being connected with a person.`;
             if (msg.toolCall?.functionCalls && Array.isArray(msg.toolCall.functionCalls)) {
                 console.log("Gemini => Received Top-Level toolCall:", JSON.stringify(msg.toolCall.functionCalls, null, 2));
                 for (const call of msg.toolCall.functionCalls) {
-                    // Handle Help Function
-                    if (call.name === "Help" && call.id) {
-                        const functionName = call.args?.functionName;
-                        const helpResult = Help(functionName);
-                        const callId = call.id;
-                        console.log(`*Help (ID: ${callId}) called for function: ${functionName}`);
-
-                        // Send function response back to Gemini Live
-                        if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN) {
-                            const functionResponsePayload = {
-                                functionResponses: [
-                                    {
-                                        id: callId,
-                                        name: "Help",
-                                        response: { result: helpResult.documentation }
-                                    }
-                                ]
-                            };
-                            const functionResponse = { toolResponse: functionResponsePayload };
-                            try {
-                                geminiWs.send(JSON.stringify(functionResponse));
-                                console.log(`Gemini Live => Sent Function Response for Help (ID: ${callId}) for ${functionName}`);
-                            } catch (err) {
-                                console.error(`Failed to send Help function response (ID: ${callId}) to Gemini:`, err);
-                            }
-                        } else {
-                            console.error(`Cannot send Help function response (ID: ${callId}), Gemini WS not open.`);
-                        }
-
                     // Handle Main Functions
-                    } else if (call.name === "GetVision" && call.id) {
+                    if (call.name === "GetVision" && call.id) {
                         let userPrompt = "Describe the image in maximum 10 sentences.";
                         if (call.args?.prompt && typeof call.args.prompt === 'string' && call.args.prompt.trim() !== "") {
                             userPrompt = call.args.prompt.trim();
@@ -691,41 +515,25 @@ You is now being connected with a person.`;
                             console.error(`Cannot send SetVolume function response (ID: ${callId}), Gemini WS not open.`);
                         }
 
-                    } else if (call.name === "ManageData" && call.id) {
+                    } else if (call.name === "Action" && call.id) {
                         const callId = call.id;
-                        const mode = call.args?.mode;
-                        const action = call.args?.action;
-                        const query = call.args?.query;
-                        const noteId = call.args?.noteId;
-                        const title = call.args?.title;
-                        const body = call.args?.body;
-                        const newPersona = call.args?.newPersona;
-                        const dateFrom = call.args?.dateFrom;
-                        const dateTo = call.args?.dateTo;
-                        const imageId = call.args?.imageId;
+                        const userCommand = call.args?.userCommand;
+                        console.log(`*Action (ID: ${callId}) called with command: "${userCommand}"`);
 
-                        console.log(`*ManageData (ID: ${callId}) called with args:`, call.args);
-                        let result = { success: false, message: "Unknown error in ManageData." };
+                        let result = { success: false, message: "Unknown error in Action." };
 
-                        try {
-                            result = await ManageData(
-                                supabase,
-                                user.user_id,
-                                mode,
-                                action,
-                                query,
-                                noteId,
-                                title,
-                                body,
-                                newPersona,
-                                dateFrom,
-                                dateTo,
-                                imageId
-                            );
-                            console.log(`ManageData result for ID ${callId}:`, result);
-                        } catch (err) {
-                            console.error(`Error executing ManageData for ID ${callId}:`, err);
-                            result = { success: false, message: err instanceof Error ? err.message : String(err) };
+                        if (typeof userCommand === 'string' && userCommand.trim()) {
+                            try {
+                                result = await processUserAction(userCommand.trim(), supabase, user.user_id);
+                                console.log(`Action result for ID ${callId}:`, result);
+                            } catch (err) {
+                                console.error(`Error executing Action for ID ${callId}:`, err);
+                                result = { success: false, message: err instanceof Error ? err.message : String(err) };
+                            }
+                        } else {
+                            const errorMsg = `Invalid or missing 'userCommand' argument for Action (ID: ${callId}). Expected a non-empty string.`;
+                            console.error(errorMsg);
+                            result = { success: false, message: errorMsg };
                         }
 
                         // Send function response back to Gemini Live
@@ -734,7 +542,7 @@ You is now being connected with a person.`;
                                 functionResponses: [
                                     {
                                         id: callId,
-                                        name: "ManageData",
+                                        name: "Action",
                                         response: { result: result.message }
                                     }
                                 ]
@@ -742,123 +550,15 @@ You is now being connected with a person.`;
                             const functionResponse = { toolResponse: functionResponsePayload };
                             try {
                                 geminiWs.send(JSON.stringify(functionResponse));
-                                console.log(`Gemini Live => Sent Function Response for ManageData (ID: ${callId}):`, JSON.stringify(functionResponsePayload));
+                                console.log(`Gemini Live => Sent Function Response for Action (ID: ${callId}):`, JSON.stringify(functionResponsePayload));
                             } catch (err) {
-                                console.error(`Failed to send ManageData function response (ID: ${callId}) to Gemini:`, err);
+                                console.error(`Failed to send Action function response (ID: ${callId}) to Gemini:`, err);
                             }
                         } else {
-                            console.error(`Cannot send ManageData function response (ID: ${callId}), Gemini WS not open.`);
+                            console.error(`Cannot send Action function response (ID: ${callId}), Gemini WS not open.`);
                         }
 
-                    } else if (call.name === "ScheduleManager" && call.id) {
-                        const callId = call.id;
-                        const mode = call.args?.mode;
-                        const scheduleId = call.args?.scheduleId;
-                        const title = call.args?.title;
-                        const scheduledTime = call.args?.scheduledTime;
-                        const scheduleType = call.args?.scheduleType;
-                        const description = call.args?.description;
-                        const schedulePattern = call.args?.schedulePattern;
-                        const targetDate = call.args?.targetDate;
-                        const query = call.args?.query;
 
-                        console.log(`*ScheduleManager (ID: ${callId}) called with args:`, call.args);
-                        let result = { success: false, message: "Unknown error in ScheduleManager." };
-
-                        try {
-                            result = await ScheduleManager(
-                                supabase,
-                                user.user_id,
-                                mode,
-                                scheduleId,
-                                title,
-                                scheduledTime,
-                                scheduleType,
-                                description,
-                                schedulePattern,
-                                targetDate,
-                                query
-                            );
-                            console.log(`ScheduleManager result for ID ${callId}:`, result);
-                        } catch (err) {
-                            console.error(`Error executing ScheduleManager for ID ${callId}:`, err);
-                            result = { success: false, message: err instanceof Error ? err.message : String(err) };
-                        }
-
-                        // Send function response back to Gemini Live
-                        if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN) {
-                            const functionResponsePayload = {
-                                functionResponses: [
-                                    {
-                                        id: callId,
-                                        name: "ScheduleManager",
-                                        response: { result: result.message }
-                                    }
-                                ]
-                            };
-                            const functionResponse = { toolResponse: functionResponsePayload };
-                            try {
-                                geminiWs.send(JSON.stringify(functionResponse));
-                                console.log(`Gemini Live => Sent Function Response for ScheduleManager (ID: ${callId}):`, JSON.stringify(functionResponsePayload));
-                            } catch (err) {
-                                console.error(`Failed to send ScheduleManager function response (ID: ${callId}) to Gemini:`, err);
-                            }
-                        } else {
-                            console.error(`Cannot send ScheduleManager function response (ID: ${callId}), Gemini WS not open.`);
-                        }
-
-                    } else if (call.name === "ReadingManager" && call.id) {
-                        const callId = call.id;
-                        const mode = call.args?.mode;
-                        const action = call.args?.action;
-                        const bookName = call.args?.bookName;
-                        const pageNumber = call.args?.pageNumber;
-                        const keyword = call.args?.keyword;
-                        const readingMode = call.args?.readingMode;
-                        const readingAmount = call.args?.readingAmount;
-
-                        console.log(`*ReadingManager (ID: ${callId}) called with args:`, call.args);
-                        let result = { success: false, message: "Unknown error in ReadingManager." };
-
-                        try {
-                            result = await ReadingManager(
-                                supabase,
-                                user.user_id,
-                                mode,
-                                action,
-                                bookName,
-                                pageNumber,
-                                keyword,
-                                readingMode,
-                                readingAmount
-                            );
-                            console.log(`ReadingManager result for ID ${callId}:`, result);
-                        } catch (err) {
-                            console.error(`Error executing ReadingManager for ID ${callId}:`, err);
-                            result = { success: false, message: err instanceof Error ? err.message : String(err) };
-                        }
-
-                        // Send function response back to Gemini Live
-                        if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN) {
-                            const functionResponsePayload = {
-                                functionResponses: [
-                                    {
-                                        id: callId,
-                                        name: "ReadingManager",
-                                        response: { result: result.message }
-                                    }
-                                ]
-                            };
-                            const functionResponse = { toolResponse: functionResponsePayload };
-                            try {
-                                geminiWs.send(JSON.stringify(functionResponse));
-                                console.log(`Gemini Live => Sent Function Response for ReadingManager (ID: ${callId}):`, JSON.stringify(functionResponsePayload));
-                            } catch (err) {
-                                console.error(`Failed to send ReadingManager function response (ID: ${callId}) to Gemini:`, err);
-                            }
-                        } else {
-                            console.error(`Cannot send ReadingManager function response (ID: ${callId}), Gemini WS not open.`);
-                        }
 
                     } else {
                         console.warn(`Received unhandled top-level function call: ${call.name} or missing ID.`);

@@ -7,6 +7,7 @@
     "jsr:@supabase/supabase-js@^2.49.4": "2.49.4",
     "npm:@alexanderolsen/libsamplerate-js@^2.1.2": "2.1.2",
     "npm:@evan/opus@^1.0.3": "1.0.3",
+    "npm:@google/generative-ai@*": "0.24.1",
     "npm:@supabase/auth-js@2.69.1": "2.69.1",
     "npm:@supabase/functions-js@2.4.4": "2.4.4",
     "npm:@supabase/node-fetch@2.6.15": "2.6.15",
@@ -49,6 +50,9 @@
     },
     "@evan/opus@1.0.3": {
       "integrity": "sha512-ADfwIad83W1LuiZDNMjDMDNQRsPz8rj5xnDLExhVWTnA5wGJCLntOn12Ir5rxGBqdfo10QhnNVdd2+gXiZ6xCg=="
+    },
+    "@google/generative-ai@0.24.1": {
+      "integrity": "sha512-MqO+MLfM6kjxcKoy0p1wRzG3b4ZZXtPI+z2IE26UogS2Cm/XHO+7gGRBh6gcJsOiIVoH93UwKvW4HdgiOZCy9Q=="
     },
     "@jimp/bmp@0.22.12_@jimp+custom@0.22.12": {
       "integrity": "sha512-aeI64HD0npropd+AR76MCcvvRaa+Qck6loCOS03CkkxGHN5/r336qTM5HPUdHKMDOGzqknuVPA8+kK1t03z12g==",
