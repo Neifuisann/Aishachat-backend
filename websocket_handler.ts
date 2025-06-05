@@ -152,6 +152,7 @@ IMPORTANT:
 - The agent dont hallucinations about the function call.
 - The agent wait for function output and response in one single turn.
 - ALWAYS confirm before deleting
+- ALWAYS try say the function output for the user to hear without asking more if you can.
 </tool_calling_instructions>
 
 <text_to_speech_format>
@@ -311,7 +312,7 @@ You is now being connected with a person.`;
                                     properties: {
                                         mode: {
                                             type: "STRING",
-                                            description: "Schedule operation mode: 'List' (get all schedules with current time), 'Add' (create new schedule), 'Update' (modify existing), 'Delete' (remove schedule), 'Search' (find by title/description), 'CheckConflict' (check time conflicts)."
+                                            description: "Schedule operation mode: 'List' (get all schedules with current time then read all the schedules aloud), 'Add' (create new schedule), 'Update' (modify existing), 'Delete' (remove schedule), 'Search' (find by title/description), 'CheckConflict' (check time conflicts)."
                                         },
                                         scheduleId: {
                                             type: "STRING",
