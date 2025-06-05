@@ -30,11 +30,17 @@ export async function callGeminiVision(base64Image: string, prompt: string): Pro
                 }
               },
               {
-                text: prompt || "Describe this image in maximum 10 sentences."
+                text: (prompt+"Response maximum 3 sentences.") || "Describe this image in maximum 3 sentences."
               }
             ]
           }
         ],
+        generationConfig: {
+          temperature: 0,
+          thinkingConfig: {
+            thinkingBudget: 500,
+          },
+        },
       };
 
       const visionUrl = getGeminiVisionUrl();
