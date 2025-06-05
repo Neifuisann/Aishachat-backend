@@ -9,8 +9,8 @@ import { ReadingManager } from "./reading_handler.ts";
  * Device operation callbacks interface
  */
 export interface DeviceOperationCallbacks {
-    requestVision: (prompt: string, callId: string) => Promise<{ success: boolean; message: string }>;
-    setVolume: (volumeLevel: number, callId: string) => Promise<{ success: boolean; message: string }>;
+    requestPhoto?: (callId: string) => Promise<{ success: boolean; imageData?: string; message: string }>;
+    setVolume?: (volumeLevel: number, callId: string) => Promise<{ success: boolean; message: string }>;
 }
 
 /**
@@ -20,7 +20,7 @@ export interface DeviceOperationCallbacks {
 class Flash25SessionManager {
     private sessions: Map<string, any> = new Map();
     private ai: any;
-    private tools: any[];
+    private tools: any[] = [];
     private config: any;
 
     constructor() {
