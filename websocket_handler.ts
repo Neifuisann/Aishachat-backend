@@ -409,7 +409,7 @@ You is now being connected with a person.`;
 
                 const setupMsg = {
                     setup: {
-                        model: "models/gemini-2.0-flash-live-001",
+                        model: "models/gemini-2.5-flash-preview-native-audio-dialog",
                         generationConfig: {
                             responseModalities: ["AUDIO"],
                             speechConfig: {
@@ -418,7 +418,7 @@ You is now being connected with a person.`;
                                         voiceName: voiceName,
                                     },
                                 },
-                                language_code: "vi-VN", // Set language
+                                //language_code: "vi-VN", // Set language
                             },
                             // Optional: Configure temperature, etc.
                             temperature: 0.3,
@@ -433,8 +433,8 @@ You is now being connected with a person.`;
                         realtimeInputConfig: {
                             automaticActivityDetection: {
                                 startOfSpeechSensitivity: "START_SENSITIVITY_HIGH",
-                                endOfSpeechSensitivity: "END_SENSITIVITY_HIGH",
-                                prefixPaddingMs: 500,
+                                endOfSpeechSensitivity: "END_SENSITIVITY_LOW",
+                                prefixPaddingMs: 200,
                                 silenceDurationMs: 800,
                             },
                             // turnCoverage: "TURN_INCLUDES_ONLY_ACTIVITY",
@@ -444,12 +444,12 @@ You is now being connected with a person.`;
                         //     proactiveAudio: true 
                         // },
 
-                        inputAudioTranscription: {},
+                        // inputAudioTranscription: {},
 
-                        outputAudioTranscription: {},
+                        // outputAudioTranscription: {},
 
                         contextWindowCompression: {
-                            triggerTokens: 25600,
+                            triggerTokens: 25600,   
                             slidingWindow: { targetTokens: 12800 },
                         },
                     }
