@@ -24,10 +24,6 @@ class ApiKeyManager {
     this.apiKeys = [
       primaryKey,
       "AIzaSyAwwEL1GPN-bdH0wJFlJG_EugrG5do8cxM",
-      "AIzaSyApMQGrsx0y3_GVJw13MgrFCLa7LBwQCOs",
-      "AIzaSyBPcFqnv3ZWHt-pRkGl9V_o_Sd79VNnSug",
-      "AIzaSyBYxmLg3eomM-2jCOjyuM68w21QkSTfRkQ",
-      "AIzaSyBE9yOQvzS93FZckeqzrdrazvec21CdKb8",
     ];
 
     console.log(`Initialized API key pool with ${this.apiKeys.length} keys`);

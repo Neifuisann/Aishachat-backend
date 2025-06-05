@@ -265,7 +265,7 @@ You are now ready to process user commands. Remember all interactions in this se
     async analyzeImage(
         sessionId: string,
         prompt: string,
-        imageData: string
+        imageDataOrUri: string
     ): Promise<FlashResponse> {
         const session = this.sessions.get(sessionId);
         if (!session) {
@@ -280,22 +280,38 @@ You are now ready to process user commands. Remember all interactions in this se
             session.lastUsed = new Date();
 
             // Add image and prompt to session history
+            const imagePart = imageDataOrUri.startsWith('https://') ?
+                // Google AI file URI
+                {
+                    fileData: {
+                        mimeType: "image/jpeg",
+                        fileUri: imageDataOrUri
+                    }
+                } :
+                // Base64 data
+                {
+                    inlineData: {
+                        mimeType: "image/jpeg",
+                        data: imageDataOrUri
+                    }
+                };
+
             session.contents.push({
                 role: 'user',
                 parts: [
                     {
                         text: prompt,
                     },
-                    {
-                        inlineData: {
-                            mimeType: "image/jpeg",
-                            data: imageData
-                        }
-                    }
+                    imagePart
                 ],
             });
 
-            console.log(`Analyzing image in session ${sessionId} with Flash 2.5 (${Math.round(imageData.length * 3 / 4 / 1024)} KB)`);
+            const imageType = imageDataOrUri.startsWith('https://') ? 'URI' : 'base64';
+            const imageSize = imageDataOrUri.startsWith('https://') ?
+                'uploaded file' :
+                `${Math.round(imageDataOrUri.length * 3 / 4 / 1024)} KB`;
+
+            console.log(`Analyzing image in session ${sessionId} with Flash 2.5 (${imageType}: ${imageSize})`);
 
             // Use Flash 2.5 for direct image analysis (no function calling)
             const response = await this.ai.models.generateContentStream({
@@ -311,7 +327,9 @@ You are now ready to process user commands. Remember all interactions in this se
             });
 
             let analysisText = "";
+            // Properly handle all response parts to avoid warnings
             for await (const chunk of response) {
+                // Handle text content directly from chunk
                 if (chunk.text) {
                     analysisText += chunk.text;
                 }
@@ -387,7 +405,7 @@ You are now ready to process user commands. Remember all interactions in this se
 
             console.log(`Processing action in session ${sessionId}: "${userCommand}"`);
 
-            const response = await this.ai.models.generateContentStream({
+            const response = await this.ai.models.generateContent({
                 model: 'gemini-2.5-flash-preview-05-20',
                 config: this.config,
                 contents: session.contents,
@@ -396,12 +414,20 @@ You are now ready to process user commands. Remember all interactions in this se
             let functionCalls: any[] = [];
             let textResponse = "";
 
-            for await (const chunk of response) {
-                if (chunk.functionCalls && chunk.functionCalls.length > 0) {
-                    functionCalls.push(...chunk.functionCalls);
-                }
-                if (chunk.text) {
-                    textResponse += chunk.text;
+            // Handle the complete response to avoid warnings
+            if (response.candidates && response.candidates.length > 0) {
+                const candidate = response.candidates[0];
+                if (candidate.content?.parts) {
+                    for (const part of candidate.content.parts) {
+                        // Handle function calls
+                        if (part.functionCall) {
+                            functionCalls.push(part.functionCall);
+                        }
+                        // Handle text content
+                        if (part.text) {
+                            textResponse += part.text;
+                        }
+                    }
                 }
             }
 
