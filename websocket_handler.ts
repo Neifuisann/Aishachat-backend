@@ -136,27 +136,29 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
         try {
             const deviceInfo = await getDeviceInfo(supabase, user.user_id);
             if (deviceInfo) {
-                currentVolume = deviceInfo.volume ?? 70; // Default to 70 if null/undefined
+                currentVolume = deviceInfo.volume ?? 100; // Default to 100 if null/undefined
                 isOta = deviceInfo.is_ota || false;
                 isReset = deviceInfo.is_reset || false;
                 console.log(`Fetched initial device info: Volume=${currentVolume}, OTA=${isOta}, Reset=${isReset}`);
             } else {
-                currentVolume = 70; // Default if no device info found
-                console.warn(`No device info found for user ${user.user_id}, defaulting volume to 70.`);
+                currentVolume = 100; // Default if no device info found
+                console.warn(`No device info found for user ${user.user_id}, defaulting volume to 100.`);
             }
             deviceWs.send(JSON.stringify({
                 type: "auth",
                 volume_control: currentVolume,
+                pitch_factor: user.personality?.pitch_factor ?? 1,
                 is_ota: isOta,
                 is_reset: isReset,
             }));
         } catch (err) {
             console.error("Failed to get initial device info:", err);
-            currentVolume = 70; // Default on error
+            currentVolume = 100; // Default on error
             // Still try to send auth message with defaults
             deviceWs.send(JSON.stringify({
                 type: "auth",
-                volume_control: 70,
+                volume_control: 100,
+                pitch_factor: 1,
                 is_ota: false,
                 is_reset: false,
             }));
@@ -668,7 +670,8 @@ You is now being connected with a person.`;
                             deviceWs.send(JSON.stringify({
                                 type: "server",
                                 msg: "RESPONSE.COMPLETE",
-                                volume_control: devInfo?.volume ?? 70 // Send last known or default volume
+                                volume_control: devInfo?.volume ?? 100, // Send last known or default volume
+                                pitch_factor: user.personality?.pitch_factor ?? 1,
                             }));
                         }
                     } catch (err) {
