@@ -137,7 +137,7 @@ export class AudioFilter {
     }
 }
 
-export function boostTtsVolumeInPlace(buffer: Uint8Array, factor = 2.0) {
+export function boostTtsVolumeInPlace(buffer: Uint8Array, factor = 3.0) {
     // Ensure factor is positive
     const safeFactor = Math.max(0, factor);
     const samples = new Int16Array(buffer.buffer, buffer.byteOffset, buffer.byteLength / 2);
