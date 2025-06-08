@@ -109,6 +109,11 @@ export const MIC_SAMPLE_BITS = 16; // 16-bit
 export const MIC_CHANNELS = 1;
 export const MIC_ACCUM_CHUNK_SIZE = 1024; // Process audio in 1k blocks
 
+// ADPCM Configuration
+export const ADPCM_ENABLED = true; // Enable ADPCM compression for microphone input
+export const ADPCM_COMPRESSION_RATIO = 4; // 4:1 compression ratio (16-bit PCM → 4-bit ADPCM)
+export const ADPCM_BUFFER_SIZE = 2048; // Buffer size for ADPCM processing
+
 // TTS Output
 export const TTS_SAMPLE_RATE = 24000;
 export const TTS_FRAME_SIZE_SAMPLES = 480; // 20ms at 24k

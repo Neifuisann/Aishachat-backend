@@ -9,6 +9,8 @@ import {
     MIC_SAMPLE_RATE,
     MIC_ACCUM_CHUNK_SIZE,
     TTS_SAMPLE_RATE,
+    ADPCM_ENABLED,
+    ADPCM_BUFFER_SIZE,
 } from "./config.ts";
 
 import {
@@ -16,6 +18,8 @@ import {
     ttsState,
     boostTtsVolumeInPlace,
 } from "./audio.ts";
+
+import { ADPCMStreamProcessor, ADPCM } from "./adpcm.ts";
 
 import { callGeminiVision } from "./vision.ts";
 import { SetVolume } from "./volume_handler.ts";
@@ -116,6 +120,9 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
         // Use gentler filter settings to avoid audio corruption
         // Reduced high-pass cutoff and increased low-pass cutoff for better speech preservation
         const micFilter = new AudioFilter(MIC_SAMPLE_RATE, 100, 7000);
+
+        // ADPCM processor for compressed audio from ESP32
+        const adpcmProcessor = new ADPCMStreamProcessor(ADPCM_BUFFER_SIZE);
 
         // TTS Filter (using the same class, but with TTS sample rate)
         // Explicitly pass sample rate and default cutoffs (can be changed here)
@@ -728,22 +735,37 @@ You is now being connected with a person.`;
             if (!pipelineActive || deviceClosed) return;
 
             if (isBinary) {
-                // --- Handle Mic PCM Audio Chunk  ---
-                let pcmChunk: Uint8Array | null = null;
+                // --- Handle Mic Audio Chunk (ADPCM Compressed or Raw PCM) ---
+                let audioChunk: Uint8Array | null = null;
 
                 if (raw instanceof ArrayBuffer) {
-                    pcmChunk = new Uint8Array(raw);
+                    audioChunk = new Uint8Array(raw);
                 } else if (Buffer.isBuffer(raw)) { // Check if it's a Node.js Buffer
                     // Create a Uint8Array view over the Buffer's underlying ArrayBuffer
-                    pcmChunk = new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
+                    audioChunk = new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
                 } else {
                     console.warn("Received unexpected binary data format (not ArrayBuffer or Buffer). Ignoring.", typeof raw);
                     // Optionally handle Buffer[] case if needed, though less common here
                     // For now, we ignore other formats
                 }
 
-                if (!pcmChunk) {
+                if (!audioChunk) {
                     return; // Don't process if we couldn't interpret the data
+                }
+
+                // Decompress ADPCM to PCM if ADPCM is enabled
+                let pcmChunk: Uint8Array;
+                if (ADPCM_ENABLED) {
+                    // Decompress ADPCM data to PCM
+                    pcmChunk = adpcmProcessor.decodeADPCMChunk(audioChunk);
+                    // Debug: Log compression ratio (only occasionally to avoid spam)
+                    if (audioChunk.length > 0 && Math.random() < 0.01) { // Log ~1% of chunks
+                        const compressionRatio = pcmChunk.length / audioChunk.length;
+                        console.log(`ADPCM: Decompressed ${audioChunk.length} bytes to ${pcmChunk.length} bytes (${compressionRatio.toFixed(1)}x expansion)`);
+                    }
+                } else {
+                    // Use raw PCM data
+                    pcmChunk = audioChunk;
                 }
 
                 // Accumulate buffer

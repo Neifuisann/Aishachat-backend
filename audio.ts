@@ -1,9 +1,11 @@
 import { Encoder } from "@evan/opus";
-import { 
-    TTS_SAMPLE_RATE, 
-    TTS_FRAME_SIZE_BYTES, 
-    MIC_SAMPLE_RATE 
+import {
+    TTS_SAMPLE_RATE,
+    TTS_FRAME_SIZE_BYTES,
+    MIC_SAMPLE_RATE,
+    ADPCM_ENABLED
 } from "./config.ts";
+import { ADPCMEncoder, ADPCM } from "./adpcm.ts";
 
 // Opus encoder for TTS
 export const ttsEncoder = new Encoder({
@@ -44,6 +46,51 @@ export function createTtsBuffer() {
 }
 
 export const ttsState = createTtsBuffer();
+
+// ADPCM TTS encoder for alternative compression
+export function createAdpcmTtsBuffer() {
+  let leftover = new Uint8Array(0);
+  const adpcmEncoder = new ADPCMEncoder();
+
+  async function encodePcmChunk(rawPcm: Uint8Array): Promise<Uint8Array[]> {
+    const combined = new Uint8Array(leftover.length + rawPcm.length);
+    combined.set(leftover, 0);
+    combined.set(rawPcm, leftover.length);
+
+    const frames: Uint8Array[] = [];
+    let offset = 0;
+
+    // Process in chunks suitable for ADPCM (ensure even number of samples)
+    const samplesPerChunk = Math.floor(TTS_FRAME_SIZE_BYTES / 2); // Convert bytes to samples
+    const evenSamplesPerChunk = samplesPerChunk & ~1; // Ensure even number
+    const bytesPerChunk = evenSamplesPerChunk * 2; // Convert back to bytes
+
+    while (offset + bytesPerChunk <= combined.length) {
+      const slice = combined.subarray(offset, offset + bytesPerChunk);
+      offset += bytesPerChunk;
+
+      try {
+        // Convert to Int16Array for ADPCM encoding
+        const samples = ADPCM.bytesToInt16Array(slice);
+        const adpcmData = adpcmEncoder.encode(samples);
+        frames.push(adpcmData);
+      } catch (e) {
+        console.error("ADPCM encode error:", e);
+      }
+    }
+    leftover = combined.subarray(offset);
+    return frames;
+  }
+
+  function reset() {
+    leftover = new Uint8Array(0);
+    adpcmEncoder.reset();
+  }
+
+  return { encodePcmChunk, reset };
+}
+
+export const adpcmTtsState = createAdpcmTtsBuffer();
 
 // AudioFilter for Microphone Input and TTS Output (Upgraded to 2nd Order Biquad)
 export class AudioFilter {
