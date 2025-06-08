@@ -36,9 +36,9 @@ export async function callGeminiVision(base64Image: string, prompt: string): Pro
           }
         ],
         generationConfig: {
-          temperature: 1,
+          temperature: 0,
           thinkingConfig: {
-            thinkingBudget: 500,
+            thinkingBudget: 2000,
           },
         },
       };

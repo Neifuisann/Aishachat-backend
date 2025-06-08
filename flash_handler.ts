@@ -198,7 +198,7 @@ class Flash25SessionManager {
     private setupConfig() {
         this.config = {
             thinkingConfig: {
-                thinkingBudget: 500,
+                thinkingBudget: 2000,
             },
             tools: this.tools,
             responseMimeType: 'text/plain',
@@ -236,6 +236,22 @@ INSTRUCTIONS:
 - Maintain context and remember previous conversations in this session
 - Use GetVision only when user explicitly asks about visual content
 - Use SetVolume only when user mentions volume, hearing, or sound issues
+
+Money regcognition cheatsheet:
+How can you recognize the money:
+First, check is the money made of paper or not (paper have no transparency and less reflection)
+Second, check the number different than 0 on the money (1,2,5)
+Third, check what color it is
+-if have number 1,2 and is paper then that is 1,000;2,000
+-if have 1 and is not paper and is yellow then that is 10,000
+-if have 1 and is not paper and is dark green then that is 100,000
+-if have 2 and is not paper and is aqua blue then that is 20,000
+-if have 2 and is not paper and is orange then that is 200,000
+-if have 5 and is not paper and is pink then that is 50,000
+-if have 5 and is not paper and is light green/blue then that is 500,000
+If you cant see the number (1,2,5) then you can try to read the text on the money.
+If you cant tell exactly the bills, tell the user what you suspect the money is. (listing all the possible bills)
+The image can be cutoff and not all number is visible then follow my rule rather than based absolutely on the image.
 
 SESSION INFO:
 - Session ID: ${sessionId}
@@ -318,7 +334,7 @@ You are now ready to process user commands. Remember all interactions in this se
                 model: 'gemini-2.5-flash-preview-05-20',
                 config: {
                     thinkingConfig: {
-                        thinkingBudget: 500,
+                        thinkingBudget: 2000,
                     },
                     responseMimeType: 'text/plain',
                     // No tools for direct image analysis
