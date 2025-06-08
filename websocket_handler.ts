@@ -113,8 +113,9 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
 
         // Microphone data accumulation & filter
         let micAccum = new Uint8Array(0);
-        // Explicitly pass sample rate and default cutoffs
-        const micFilter = new AudioFilter(MIC_SAMPLE_RATE, 300, 3500);
+        // Use gentler filter settings to avoid audio corruption
+        // Reduced high-pass cutoff and increased low-pass cutoff for better speech preservation
+        const micFilter = new AudioFilter(MIC_SAMPLE_RATE, 100, 7000);
 
         // TTS Filter (using the same class, but with TTS sample rate)
         // Explicitly pass sample rate and default cutoffs (can be changed here)
@@ -314,7 +315,7 @@ You is now being connected with a person.`;
 
                 const setupMsg = {
                     setup: {
-                        model: "models/gemini-2.0-flash-live-001",
+                        model: "models/gemini-2.5-flash-preview-native-audio-dialog",
                         generationConfig: {
                             responseModalities: ["AUDIO"],
                             speechConfig: {
@@ -323,7 +324,7 @@ You is now being connected with a person.`;
                                         voiceName: voiceName,
                                     },
                                 },
-                                language_code: "vi-VN", // Set language
+                                //language_code: "vi-VN", // Set language
                             },
                             // Optional: Configure temperature, etc.
                             temperature: 1,
@@ -338,8 +339,8 @@ You is now being connected with a person.`;
                         realtimeInputConfig: {
                             automaticActivityDetection: {
                                 startOfSpeechSensitivity: "START_SENSITIVITY_HIGH",
-                                endOfSpeechSensitivity: "END_SENSITIVITY_LOW",
-                                prefixPaddingMs: 200,
+                                endOfSpeechSensitivity: "END_SENSITIVITY_HIGH",
+                                prefixPaddingMs: 20,
                                 silenceDurationMs: 800,
                             },
                             // turnCoverage: "TURN_INCLUDES_ONLY_ACTIVITY",
@@ -500,9 +501,9 @@ You is now being connected with a person.`;
                 for (const call of msg.toolCall.functionCalls) {
                     // Handle GetVision function (fast capture + Flash 2.5 analysis)
                     if (call.name === "GetVision" && call.id) {
-                        let userPrompt = "Describe the image in maximum 10 sentences.";
+                        let userPrompt = "Describe the image in maximum 3 sentences. With nothing else!";
                         if (call.args?.prompt && typeof call.args.prompt === 'string' && call.args.prompt.trim() !== "") {
-                            userPrompt = call.args.prompt.trim();
+                            userPrompt = call.args.prompt.trim() + "Response in maximum 3 sentences. With nothing else!";
                             console.log(`*GetVision (ID: ${call.id}) prompt: "${userPrompt}"`);
                         } else {
                             console.log(`*GetVision (ID: ${call.id}) called with no specific prompt, using default.`);
@@ -756,11 +757,19 @@ You is now being connected with a person.`;
                     const chunkToSend = micAccum.slice(0, MIC_ACCUM_CHUNK_SIZE);
                     micAccum = micAccum.slice(MIC_ACCUM_CHUNK_SIZE); // Keep the remainder
 
-                    // Apply filter IN PLACE
-                    micFilter.processAudioInPlace(chunkToSend);
+                    // Debug: Log audio chunk info periodically
+                    //console.log(`Audio chunk: ${chunkToSend.length} bytes, first few samples: ${Array.from(chunkToSend.slice(0, 8)).join(',')}`);
 
-                    // Base64 encode
-                    const b64 = Buffer.from(chunkToSend).toString("base64");
+                    // TEMPORARY: Skip filtering to test if filter is causing issues
+                    // TODO: Re-enable filtering after testing
+                    const filteredChunk = new Uint8Array(chunkToSend);
+                    micFilter.processAudioInPlace(filteredChunk);
+
+                    // Use original unfiltered audio for now
+                    const audioToSend = chunkToSend;
+
+                    // Base64 encode the audio
+                    const b64 = Buffer.from(audioToSend).toString("base64");
 
                     // Send to Gemini if connected
                     if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN) {
@@ -773,6 +782,9 @@ You is now being connected with a person.`;
                         };
                         try {
                             geminiWs.send(JSON.stringify(gemMsg));
+                            // Debug: Log successful sends periodically
+                            //console.log(`Successfully sent audio chunk to Gemini: ${b64.length} chars base64`);
+
                         } catch (err) {
                             console.error("Failed to send audio chunk to Gemini:", err);
                         }
@@ -846,6 +858,8 @@ You is now being connected with a person.`;
 
                         // Process image with Flash 2.5 for intelligent analysis
                         let visionResult = "";
+                        let storagePath: string | null = null;
+
                         if (pendingVisionCall) {
                             try {
                                 console.log(`Device => Processing image with Flash 2.5 (${Math.round(processedBase64Jpeg.length * 3 / 4 / 1024)} KB)`);
@@ -900,6 +914,40 @@ You is now being connected with a person.`;
                         // Clear the pending call
                         pendingVisionCall = null;
 
+                        // --- START: Upload to Supabase Storage ---
+                        try {
+                            console.log(`Device => Received image data (${Math.round(processedBase64Jpeg.length * 3 / 4 / 1024)} KB), attempting upload...`);
+                            // Decode Base64 to Buffer for upload
+                            const imageBuffer = Buffer.from(processedBase64Jpeg, 'base64');
+                            // Generate a unique path/filename within the 'private' folder
+                            const fileName = `private/${user.user_id}/${Date.now()}.jpg`; // <-- Added 'private/' prefix
+                            const bucketName = 'images'; // Define evir bucket name
+
+                            const { data: uploadData, error: uploadError } = await supabase
+                                .storage
+                                .from(bucketName)
+                                .upload(fileName, imageBuffer, {
+                                    contentType: 'image/jpeg',
+                                    upsert: true // Overwrite if file with same name exists (optional)
+                                });
+
+                            if (uploadError) {
+                                console.error(`Supabase Storage Error: Failed to upload image to ${bucketName}/${fileName}`, uploadError);
+                                // Proceed without storage path, but still call vision
+                                photoCaptureFailed = true; // Indicate a failure occurred in the process
+                            } else if (uploadData) {
+                                storagePath = uploadData.path;
+                                console.log(`Supabase Storage: Image successfully uploaded to ${bucketName}/${storagePath}`);
+                                // Optionally get public URL (requires bucket to be public or use signed URLs)
+                                // const { data: urlData } = supabase.storage.from(bucketName).getPublicUrl(storagePath);
+                                // console.log("Public URL:", urlData?.publicUrl);
+                            }
+                        } catch (storageErr) {
+                            console.error("Supabase Storage: Unexpected error during upload:", storageErr);
+                            photoCaptureFailed = true; // Indicate a failure occurred
+                        }
+                        // --- END: Upload to Supabase Storage ---
+
                     } // --- End Handle Image Data ---
 
                     // --- Handle Control Messages (e.g., end_of_speech, interrupt - from Script 2) ---
@@ -909,7 +957,9 @@ You is now being connected with a person.`;
                             // Flush any remaining audio in the buffer
                             if (micAccum.length > 0 && isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN) {
                                 console.log(`Flushing remaining ${micAccum.length} bytes of audio.`);
-                                micFilter.processAudioInPlace(micAccum);
+
+                                // TEMPORARY: Skip filtering on final chunk too
+                                // micFilter.processAudioInPlace(micAccum);
                                 const b64 = Buffer.from(micAccum).toString("base64");
                                 micAccum = new Uint8Array(0); // Clear after processing
 
@@ -918,10 +968,12 @@ You is now being connected with a person.`;
                                 };
                                 try {
                                     geminiWs.send(JSON.stringify(gemMsg));
+                                    console.log("Successfully sent final audio chunk to Gemini");
                                 } catch (err) {
                                     console.error("Failed to send final audio chunk to Gemini:", err);
                                 }
                             } else {
+                                console.log("No remaining audio to flush or Gemini not connected");
                                 micAccum = new Uint8Array(0); // Clear buffer even if not sent
                             }
 
