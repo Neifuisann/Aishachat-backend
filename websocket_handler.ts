@@ -136,6 +136,8 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
         let pendingVisionCall: { prompt: string; id?: string } | null = null;
         let waitingForImage = false;
         let photoCaptureFailed = false;
+        let imageTimeoutId: ReturnType<typeof setTimeout> | null = null;
+        const IMAGE_CAPTURE_TIMEOUT = 15000; // 15 seconds timeout for image capture
 
         // --- Initial Device Setup & Fetch Volume --- Moved up
         let currentVolume: number | null = null;
@@ -546,13 +548,48 @@ Bạn hiện đang được kết nối với một người nói tiếng Việt
                         } else {
                             pendingVisionCall = { prompt: userPrompt, id: call.id }; // Store prompt and ID
                             waitingForImage = true;
+
+                            // Set timeout for image capture
+                            imageTimeoutId = setTimeout(() => {
+                                if (waitingForImage && pendingVisionCall) {
+                                    console.error(`Image capture timeout after ${IMAGE_CAPTURE_TIMEOUT}ms. Device may not be responding to photo requests.`);
+                                    waitingForImage = false;
+
+                                    // Send error response back to Gemini
+                                    if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN && pendingVisionCall.id) {
+                                        const functionResponsePayload = {
+                                            functionResponses: [{
+                                                id: pendingVisionCall.id,
+                                                name: "GetVision",
+                                                response: { result: "Image capture failed: Device did not respond to photo request within timeout period. Please check device camera functionality." }
+                                            }]
+                                        };
+                                        const functionResponse = { toolResponse: functionResponsePayload };
+                                        try {
+                                            geminiWs.send(JSON.stringify(functionResponse));
+                                            console.log("Gemini Live => Sent timeout error response for GetVision");
+                                        } catch (err) {
+                                            console.error("Failed to send timeout error response to Gemini:", err);
+                                        }
+                                    }
+
+                                    pendingVisionCall = null;
+                                    imageTimeoutId = null;
+                                }
+                            }, IMAGE_CAPTURE_TIMEOUT);
+
                             if (deviceWs.readyState === WSWebSocket.OPEN) {
-                                console.log("Device => Sending REQUEST.PHOTO (triggered by GetVision)");
+                                console.log(`Device => Sending REQUEST.PHOTO (triggered by GetVision ID: ${call.id})`);
+                                console.log(`Device => Waiting for image capture with ${IMAGE_CAPTURE_TIMEOUT}ms timeout...`);
                                 deviceWs.send(JSON.stringify({ type: "server", msg: "REQUEST.PHOTO" }));
                             } else {
                                 console.error("Cannot request photo, device WS is not open.");
                                 waitingForImage = false;
                                 pendingVisionCall = null;
+                                if (imageTimeoutId) {
+                                    clearTimeout(imageTimeoutId);
+                                    imageTimeoutId = null;
+                                }
                             }
                         }
                     } else if (call.name === "Action" && call.id) {
@@ -847,16 +884,45 @@ Bạn hiện đang được kết nối với một người nói tiếng Việt
                 // --- Handle Text Messages from Device (JSON commands, image data) ---
                 let msgObj;
                 try {
-                    msgObj = JSON.parse(raw.toString("utf-8"));
+                    const rawString = raw.toString("utf-8");
+                    // Log incoming message type and size for debugging
+                    if (rawString.length > 1000) {
+                        console.log(`Device => Received large message (${rawString.length} chars), likely image data`);
+                        // Check if it starts with image data pattern
+                        if (rawString.includes('"type":"image"')) {
+                            console.log("Device => Confirmed image message detected");
+                        }
+                    } else {
+                        console.log(`Device => Received message: ${rawString.substring(0, 200)}${rawString.length > 200 ? '...' : ''}`);
+                    }
+
+                    msgObj = JSON.parse(rawString);
                 } catch (err) {
-                    console.error("Device JSON parse error:", err, "Raw:", raw.toString("utf-8"));
+                    console.error("Device JSON parse error:", err, "Raw length:", raw.toString("utf-8").length);
+                    console.error("Raw preview:", raw.toString("utf-8").substring(0, 500));
                     return; // Ignore malformed messages
                 }
 
                 // Wrap the actual message processing logic in a try/catch
                 try {
                     // --- Handle Image Data  ---
-                    if (msgObj.type === "image" && waitingForImage && pendingVisionCall) {
+                    if (msgObj.type === "image") {
+                        console.log(`Device => Processing image message. waitingForImage: ${waitingForImage}, pendingVisionCall: ${!!pendingVisionCall}`);
+
+                        if (!waitingForImage || !pendingVisionCall) {
+                            console.warn(`Device => Received image but not waiting for one. waitingForImage: ${waitingForImage}, pendingVisionCall: ${!!pendingVisionCall}`);
+                            return; // Don't process unexpected images
+                        }
+
+                        console.log(`Device => Received image data for GetVision ID: ${pendingVisionCall.id}`);
+                        console.log(`Device => Image capture successful, processing with Flash 2.5...`);
+
+                        // Clear timeout since we received the image
+                        if (imageTimeoutId) {
+                            clearTimeout(imageTimeoutId);
+                            imageTimeoutId = null;
+                        }
+
                         const base64Jpeg = msgObj.data as string;
                         if (!base64Jpeg || typeof base64Jpeg !== 'string') {
                             console.error("Device => Received image data but 'data' field is missing or not a string.");
