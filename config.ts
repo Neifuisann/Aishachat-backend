@@ -119,6 +119,10 @@ export const TTS_SAMPLE_RATE = 24000;
 export const TTS_FRAME_SIZE_SAMPLES = 480; // 20ms at 24k
 export const TTS_FRAME_SIZE_BYTES = TTS_FRAME_SIZE_SAMPLES * 2; // 960 bytes (16-bit)
 
+// Image Streaming Configuration
+export const IMAGE_CHUNK_SIZE = 1024; // 8KB chunks for image streaming
+export const IMAGE_CHUNK_TIMEOUT_MS = 10000; // 10 seconds timeout for chunk assembly
+
 // Server Configuration
 export const HOST = Deno.env.get("HOST") || "0.0.0.0";
 // Default to 8080 unless DEV_MODE is true, then default to 8000

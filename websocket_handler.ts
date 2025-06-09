@@ -24,6 +24,7 @@ import { ADPCMStreamProcessor, ADPCM } from "./adpcm.ts";
 import { callGeminiVision } from "./vision.ts";
 import { SetVolume } from "./volume_handler.ts";
 import { rotateImage180, isValidJpegBase64 } from "./image_utils.ts";
+import { IMAGE_CHUNK_SIZE, IMAGE_CHUNK_TIMEOUT_MS } from "./config.ts";
 import {
     processUserActionWithSession,
     createFlash25Session,
@@ -53,6 +54,7 @@ interface ConnectionContext {
 export function setupWebSocketConnectionHandler(wss: _WSS) {
     wss.on("connection", async (deviceWs: WSWebSocket, context: ConnectionContext) => {
         const { user, supabase, timestamp } = context;
+        console.log(`Device WebSocket connected for user: ${user.user_id}`);
         let geminiWs: WSWebSocket | null = null;
         let pipelineActive = true;
         let deviceClosed = false;
@@ -138,6 +140,17 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
         let photoCaptureFailed = false;
         let imageTimeoutId: ReturnType<typeof setTimeout> | null = null;
         const IMAGE_CAPTURE_TIMEOUT = 15000; // 15 seconds timeout for image capture
+
+        // Image chunk reassembly state
+        interface ChunkAssembly {
+            chunks: Map<number, string>;
+            totalChunks: number;
+            receivedCount: number;
+            timestamp: number;
+            mime?: string;
+        }
+        let imageChunkAssembly: ChunkAssembly | null = null;
+        let chunkTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
         // --- Initial Device Setup & Fetch Volume --- Moved up
         let currentVolume: number | null = null;
@@ -288,6 +301,151 @@ Bạn hiện đang được kết nối với một người nói tiếng Việt
 
 
         const firstMessage = createFirstMessage(chatHistory, { user, supabase, timestamp });
+
+        // Process complete image (extracted from existing logic)
+        async function processCompleteImage(base64Jpeg: string) {
+            if (!base64Jpeg || typeof base64Jpeg !== 'string') {
+                console.error("Device => Received image data but 'data' field is missing or not a string.");
+                waitingForImage = false;
+                photoCaptureFailed = true;
+
+                if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN && pendingVisionCall?.id) {
+                    const functionResponsePayload = {
+                        functionResponses: [{
+                            id: pendingVisionCall.id,
+                            name: "GetVision",
+                            response: { result: "Failed to receive valid image data from device." }
+                        }]
+                    };
+                    const functionResponse = { toolResponse: functionResponsePayload };
+                    try {
+                        geminiWs.send(JSON.stringify(functionResponse));
+                        console.log("Gemini Live => Sent Function Response (Image Error):");
+                    } catch (err) {
+                        console.error("Failed to send error function response to Gemini:", err);
+                    }
+                }
+                pendingVisionCall = null;
+                return;
+            }
+
+            waitingForImage = false; // Mark as received (start processing)
+
+            // Clear timeout since we received the image
+            if (imageTimeoutId) {
+                clearTimeout(imageTimeoutId);
+                imageTimeoutId = null;
+            }
+
+            // --- START: Rotate Image 180 degrees ---
+            let processedBase64Jpeg = base64Jpeg;
+            try {
+                console.log(`Device => Rotating image 180 degrees to correct ESP32 upside-down orientation...`);
+                if (isValidJpegBase64(base64Jpeg)) {
+                    processedBase64Jpeg = await rotateImage180(base64Jpeg);
+                    console.log(`Device => Image rotation completed successfully.`);
+                } else {
+                    console.warn(`Device => Invalid JPEG format detected, skipping rotation.`);
+                }
+            } catch (rotationErr) {
+                console.error("Error rotating image:", rotationErr);
+                console.warn("Using original image without rotation.");
+                processedBase64Jpeg = base64Jpeg; // Fallback to original
+            }
+            // --- END: Rotate Image 180 degrees ---
+
+            // Process image with Flash 2.5 for intelligent analysis
+            let visionResult = "";
+            let storagePath: string | null = null;
+
+            if (pendingVisionCall) {
+                try {
+                    console.log(`Device => Processing image with Flash 2.5 (${Math.round(processedBase64Jpeg.length * 3 / 4 / 1024)} KB)`);
+
+                    // Use dedicated image analysis function (no function calling)
+                    const flash25Result = await analyzeImageWithFlash25(
+                        sessionId,
+                        pendingVisionCall.prompt,
+                        processedBase64Jpeg
+                    );
+
+                    if (flash25Result.success) {
+                        visionResult = flash25Result.message;
+                        console.log("Flash 2.5 Vision Analysis =>", visionResult);
+                    } else {
+                        visionResult = "Failed to analyze image with Flash 2.5: " + flash25Result.message;
+                        console.error("Flash 2.5 Vision Error =>", flash25Result.message);
+                    }
+
+                } catch (error) {
+                    console.error("Error processing image with Flash 2.5:", error);
+                    visionResult = "Failed to analyze image due to processing error.";
+                }
+            } else {
+                visionResult = "No pending vision call found.";
+            }
+
+            // Send function response back to Gemini Live
+            if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN && pendingVisionCall?.id) {
+                const functionResponsePayload = {
+                    functionResponses: [
+                        {
+                            id: pendingVisionCall.id,
+                            name: "GetVision",
+                            response: { result: visionResult }
+                        }
+                    ]
+                };
+                const functionResponse = {
+                    toolResponse: functionResponsePayload
+                };
+                try {
+                    geminiWs.send(JSON.stringify(functionResponse));
+                    console.log("Gemini Live => Sent Flash 2.5 Vision Response:", JSON.stringify(functionResponsePayload));
+                } catch (err) {
+                    console.error("Failed to send Flash 2.5 vision response to Gemini:", err);
+                }
+            } else {
+                console.error("Cannot send vision response, Gemini WS not open or no pending call ID.");
+            }
+
+            // Clear the pending call
+            pendingVisionCall = null;
+
+            // --- START: Upload to Supabase Storage ---
+            try {
+                console.log(`Device => Received image data (${Math.round(processedBase64Jpeg.length * 3 / 4 / 1024)} KB), attempting upload...`);
+                // Decode Base64 to Buffer for upload
+                const imageBuffer = Buffer.from(processedBase64Jpeg, 'base64');
+                // Generate a unique path/filename within the 'private' folder
+                const fileName = `private/${user.user_id}/${Date.now()}.jpg`; // <-- Added 'private/' prefix
+                const bucketName = 'images'; // Define evir bucket name
+
+                const { data: uploadData, error: uploadError } = await supabase
+                    .storage
+                    .from(bucketName)
+                    .upload(fileName, imageBuffer, {
+                        contentType: 'image/jpeg',
+                        upsert: true // Overwrite if file with same name exists (optional)
+                    });
+
+                if (uploadError) {
+                    console.error(`Supabase Storage Error: Failed to upload image to ${bucketName}/${fileName}`, uploadError);
+                    // Proceed without storage path, but still call vision
+                    photoCaptureFailed = true; // Indicate a failure occurred in the process
+                } else if (uploadData) {
+                    storagePath = uploadData.path;
+                    console.log(`Supabase Storage: Image successfully uploaded to ${bucketName}/${storagePath}`);
+                    // Optionally get public URL (requires bucket to be public or use signed URLs)
+                    // const { data: urlData } = supabase.storage.from(bucketName).getPublicUrl(storagePath);
+                    // console.log("Public URL:", urlData?.publicUrl);
+                }
+            } catch (storageErr) {
+                console.error("Supabase Storage: Unexpected error during upload:", storageErr);
+                photoCaptureFailed = true; // Indicate a failure occurred
+            }
+            // --- END: Upload to Supabase Storage ---
+        }
 
         // Connect to Gemini Live (incorporating function tools)
         function connectToGeminiLive() {
@@ -796,6 +954,21 @@ Bạn hiện đang được kết nối với một người nói tiếng Việt
         deviceWs.on("message", async (raw: RawData, isBinary: boolean) => {
             if (!pipelineActive || deviceClosed) return;
 
+            // Debug: Log all incoming messages
+            if (isBinary) {
+                const rawSize = raw instanceof ArrayBuffer ? raw.byteLength :
+                               Buffer.isBuffer(raw) ? raw.length :
+                               Array.isArray(raw) ? raw.reduce((sum, buf) => sum + buf.length, 0) : 0;
+                console.log(`Device => Received binary message: ${rawSize} bytes`);
+            } else {
+                const rawString = raw.toString("utf-8");
+                if (rawString.length > 1000) {
+                    console.log(`Device => Received large text message: ${rawString.length} chars`);
+                } else {
+                    console.log(`Device => Received text message: ${rawString.substring(0, 200)}${rawString.length > 200 ? '...' : ''}`);
+                }
+            }
+
             if (isBinary) {
                 // --- Handle Mic Audio Chunk (ADPCM Compressed or Raw PCM) ---
                 let audioChunk: Uint8Array | null = null;
@@ -905,161 +1078,117 @@ Bạn hiện đang được kết nối với một người nói tiếng Việt
 
                 // Wrap the actual message processing logic in a try/catch
                 try {
-                    // --- Handle Image Data  ---
-                    if (msgObj.type === "image") {
-                        console.log(`Device => Processing image message. waitingForImage: ${waitingForImage}, pendingVisionCall: ${!!pendingVisionCall}`);
+                    // --- Handle Image Chunk Data ---
+                    if (msgObj.type === "image_chunk") {
+                        console.log(`Device => Received image chunk ${msgObj.chunk_index + 1}/${msgObj.total_chunks}`);
+
+                        if (!waitingForImage || !pendingVisionCall) {
+                            console.warn(`Device => Received image chunk but not waiting for image. Ignoring.`);
+                            return;
+                        }
+
+                        // Initialize chunk assembly if this is the first chunk
+                        if (!imageChunkAssembly) {
+                            imageChunkAssembly = {
+                                chunks: new Map(),
+                                totalChunks: msgObj.total_chunks,
+                                receivedCount: 0,
+                                timestamp: Date.now()
+                            };
+
+                            // Set timeout for chunk assembly
+                            chunkTimeoutId = setTimeout(() => {
+                                console.error(`Image chunk assembly timeout after ${IMAGE_CHUNK_TIMEOUT_MS}ms. Received ${imageChunkAssembly?.receivedCount}/${imageChunkAssembly?.totalChunks} chunks.`);
+
+                                // Clean up and send error response
+                                imageChunkAssembly = null;
+                                waitingForImage = false;
+
+                                if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN && pendingVisionCall?.id) {
+                                    const functionResponsePayload = {
+                                        functionResponses: [{
+                                            id: pendingVisionCall.id,
+                                            name: "GetVision",
+                                            response: { result: "Image capture failed: Incomplete chunk transmission." }
+                                        }]
+                                    };
+                                    const functionResponse = { toolResponse: functionResponsePayload };
+                                    try {
+                                        geminiWs.send(JSON.stringify(functionResponse));
+                                        console.log("Gemini Live => Sent chunk timeout error response");
+                                    } catch (err) {
+                                        console.error("Failed to send chunk timeout error response to Gemini:", err);
+                                    }
+                                }
+
+                                pendingVisionCall = null;
+                                chunkTimeoutId = null;
+                            }, IMAGE_CHUNK_TIMEOUT_MS);
+                        }
+
+                        // Store the chunk
+                        imageChunkAssembly.chunks.set(msgObj.chunk_index, msgObj.data);
+                        imageChunkAssembly.receivedCount++;
+
+                        console.log(`Device => Stored chunk ${msgObj.chunk_index}, total received: ${imageChunkAssembly.receivedCount}/${imageChunkAssembly.totalChunks}`);
+
+                        // Check if we have all chunks
+                        if (imageChunkAssembly.receivedCount === imageChunkAssembly.totalChunks) {
+                            console.log(`Device => All chunks received, assembling image...`);
+
+                            // Clear timeout
+                            if (chunkTimeoutId) {
+                                clearTimeout(chunkTimeoutId);
+                                chunkTimeoutId = null;
+                            }
+
+                            // Assemble the complete base64 image
+                            let completeBase64 = "";
+                            for (let i = 0; i < imageChunkAssembly.totalChunks; i++) {
+                                const chunk = imageChunkAssembly.chunks.get(i);
+                                if (!chunk) {
+                                    console.error(`Missing chunk ${i} during assembly!`);
+                                    imageChunkAssembly = null;
+                                    waitingForImage = false;
+                                    pendingVisionCall = null;
+                                    return;
+                                }
+                                completeBase64 += chunk;
+                            }
+
+                            console.log(`Device => Image assembly complete - ${completeBase64.length} characters`);
+
+                            // Clean up chunk assembly
+                            imageChunkAssembly = null;
+
+                            // Process the complete image (reuse existing logic)
+                            await processCompleteImage(completeBase64);
+                        }
+
+                        return; // Don't process further for chunk messages
+                    }
+
+                    // --- Handle Image Complete Message ---
+                    else if (msgObj.type === "image_complete") {
+                        console.log(`Device => Received image_complete message for ${msgObj.total_chunks} chunks`);
+                        // This is just a confirmation message, actual processing happens when all chunks are received
+                        return;
+                    }
+
+                    // --- Handle Legacy Single Image Data ---
+                    else if (msgObj.type === "image") {
+                        console.log(`Device => Processing legacy single image message. waitingForImage: ${waitingForImage}, pendingVisionCall: ${!!pendingVisionCall}`);
 
                         if (!waitingForImage || !pendingVisionCall) {
                             console.warn(`Device => Received image but not waiting for one. waitingForImage: ${waitingForImage}, pendingVisionCall: ${!!pendingVisionCall}`);
                             return; // Don't process unexpected images
                         }
 
-                        console.log(`Device => Received image data for GetVision ID: ${pendingVisionCall.id}`);
+                        console.log(`Device => Received legacy image data for GetVision ID: ${pendingVisionCall.id}`);
                         console.log(`Device => Image capture successful, processing with Flash 2.5...`);
 
-                        // Clear timeout since we received the image
-                        if (imageTimeoutId) {
-                            clearTimeout(imageTimeoutId);
-                            imageTimeoutId = null;
-                        }
-
                         const base64Jpeg = msgObj.data as string;
-                        if (!base64Jpeg || typeof base64Jpeg !== 'string') {
-                            console.error("Device => Received image data but 'data' field is missing or not a string.");
-                            waitingForImage = false;
-                            photoCaptureFailed = true;
-                            // No image data, so we can't proceed with upload or vision call
-                            // Send an error response back to Gemini?
-                            if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN && pendingVisionCall.id) {
-                                const functionResponsePayload = {
-                                    functionResponses: [{
-                                        id: pendingVisionCall.id,
-                                        name: "GetVision",
-                                        response: { result: "Failed to receive valid image data from device." }
-                                    }]
-                                };
-                                const functionResponse = { toolResponse: functionResponsePayload };
-                                try {
-                                    geminiWs.send(JSON.stringify(functionResponse));
-                                    console.log("Gemini Live => Sent Function Response (Image Error):");
-                                } catch (err) {
-                                    console.error("Failed to send error function response to Gemini:", err);
-                                }
-                            }
-                            pendingVisionCall = null; // Clear the pending call
-                            return; // Stop processing this message
-                        }
-
-                        waitingForImage = false; // Mark as received (start processing)
-
-                        // --- START: Rotate Image 180 degrees ---
-                        let processedBase64Jpeg = base64Jpeg;
-                        try {
-                            console.log(`Device => Rotating image 180 degrees to correct ESP32 upside-down orientation...`);
-                            if (isValidJpegBase64(base64Jpeg)) {
-                                processedBase64Jpeg = await rotateImage180(base64Jpeg);
-                                console.log(`Device => Image rotation completed successfully.`);
-                            } else {
-                                console.warn(`Device => Invalid JPEG format detected, skipping rotation.`);
-                            }
-                        } catch (rotationErr) {
-                            console.error("Error rotating image:", rotationErr);
-                            console.warn("Using original image without rotation.");
-                            processedBase64Jpeg = base64Jpeg; // Fallback to original
-                        }
-                        // --- END: Rotate Image 180 degrees ---
-
-                        // Process image with Flash 2.5 for intelligent analysis
-                        let visionResult = "";
-                        let storagePath: string | null = null;
-
-                        if (pendingVisionCall) {
-                            try {
-                                console.log(`Device => Processing image with Flash 2.5 (${Math.round(processedBase64Jpeg.length * 3 / 4 / 1024)} KB)`);
-
-                                // Use dedicated image analysis function (no function calling)
-                                const flash25Result = await analyzeImageWithFlash25(
-                                    sessionId,
-                                    pendingVisionCall.prompt,
-                                    processedBase64Jpeg
-                                );
-
-                                if (flash25Result.success) {
-                                    visionResult = flash25Result.message;
-                                    console.log("Flash 2.5 Vision Analysis =>", visionResult);
-                                } else {
-                                    visionResult = "Failed to analyze image with Flash 2.5: " + flash25Result.message;
-                                    console.error("Flash 2.5 Vision Error =>", flash25Result.message);
-                                }
-
-                            } catch (error) {
-                                console.error("Error processing image with Flash 2.5:", error);
-                                visionResult = "Failed to analyze image due to processing error.";
-                            }
-                        } else {
-                            visionResult = "No pending vision call found.";
-                        }
-
-                        // Send function response back to Gemini Live
-                        if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN && pendingVisionCall?.id) {
-                            const functionResponsePayload = {
-                                functionResponses: [
-                                    {
-                                        id: pendingVisionCall.id,
-                                        name: "GetVision",
-                                        response: { result: visionResult }
-                                    }
-                                ]
-                            };
-                            const functionResponse = {
-                                toolResponse: functionResponsePayload
-                            };
-                            try {
-                                geminiWs.send(JSON.stringify(functionResponse));
-                                console.log("Gemini Live => Sent Flash 2.5 Vision Response:", JSON.stringify(functionResponsePayload));
-                            } catch (err) {
-                                console.error("Failed to send Flash 2.5 vision response to Gemini:", err);
-                            }
-                        } else {
-                            console.error("Cannot send vision response, Gemini WS not open or no pending call ID.");
-                        }
-
-                        // Clear the pending call
-                        pendingVisionCall = null;
-
-                        // --- START: Upload to Supabase Storage ---
-                        try {
-                            console.log(`Device => Received image data (${Math.round(processedBase64Jpeg.length * 3 / 4 / 1024)} KB), attempting upload...`);
-                            // Decode Base64 to Buffer for upload
-                            const imageBuffer = Buffer.from(processedBase64Jpeg, 'base64');
-                            // Generate a unique path/filename within the 'private' folder
-                            const fileName = `private/${user.user_id}/${Date.now()}.jpg`; // <-- Added 'private/' prefix
-                            const bucketName = 'images'; // Define evir bucket name
-
-                            const { data: uploadData, error: uploadError } = await supabase
-                                .storage
-                                .from(bucketName)
-                                .upload(fileName, imageBuffer, {
-                                    contentType: 'image/jpeg',
-                                    upsert: true // Overwrite if file with same name exists (optional)
-                                });
-
-                            if (uploadError) {
-                                console.error(`Supabase Storage Error: Failed to upload image to ${bucketName}/${fileName}`, uploadError);
-                                // Proceed without storage path, but still call vision
-                                photoCaptureFailed = true; // Indicate a failure occurred in the process
-                            } else if (uploadData) {
-                                storagePath = uploadData.path;
-                                console.log(`Supabase Storage: Image successfully uploaded to ${bucketName}/${storagePath}`);
-                                // Optionally get public URL (requires bucket to be public or use signed URLs)
-                                // const { data: urlData } = supabase.storage.from(bucketName).getPublicUrl(storagePath);
-                                // console.log("Public URL:", urlData?.publicUrl);
-                            }
-                        } catch (storageErr) {
-                            console.error("Supabase Storage: Unexpected error during upload:", storageErr);
-                            photoCaptureFailed = true; // Indicate a failure occurred
-                        }
-                        // --- END: Upload to Supabase Storage ---
+                        await processCompleteImage(base64Jpeg);
 
                     } // --- End Handle Image Data ---
 
@@ -1178,6 +1307,13 @@ Bạn hiện đang được kết nối với một người nói tiếng Việt
             console.log(`Device WS closed => Code: ${code}, Reason: ${reason.toString()}`);
             deviceClosed = true;
             pipelineActive = false;
+
+            // Clean up image chunk assembly
+            if (chunkTimeoutId) {
+                clearTimeout(chunkTimeoutId);
+                chunkTimeoutId = null;
+            }
+            imageChunkAssembly = null;
 
             // If waiting for a retry, cancel it
             if (retryTimeoutId) {
