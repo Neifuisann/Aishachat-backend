@@ -15,7 +15,7 @@ export const ttsEncoder = new Encoder({
 });
 
 // Set bitrate to 3600 for better compression
-ttsEncoder.bitrate = 6000;
+ttsEncoder.bitrate = 12000;
 console.log(`TTS Opus encoder configured: ${TTS_SAMPLE_RATE}Hz, ${ttsEncoder.channels} channel(s), ${ttsEncoder.bitrate} bitrate`);
 
 export function createTtsBuffer() {
