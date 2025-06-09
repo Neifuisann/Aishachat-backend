@@ -298,7 +298,9 @@ Use the googleSearch tool to perform searches when helpful. Enter the most reaso
 ${systemPromptText}
 </personality_instructions>
 
-You are now connected to a Vietnamese speaker.`;
+today date is: ${new Date().toISOString()}
+You are now connected to a Vietnamese speaker.
+`;
 
 
         const firstMessage = createFirstMessage(chatHistory, { user, supabase, timestamp });
