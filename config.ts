@@ -120,7 +120,7 @@ export const TTS_FRAME_SIZE_SAMPLES = 480; // 20ms at 24k
 export const TTS_FRAME_SIZE_BYTES = TTS_FRAME_SIZE_SAMPLES * 2; // 960 bytes (16-bit)
 
 // Image Streaming Configuration
-export const IMAGE_CHUNK_SIZE = 32768; // 1KB chunks for image streaming
+export const IMAGE_CHUNK_SIZE = 16384; // 1KB chunks for image streaming
 export const IMAGE_CHUNK_TIMEOUT_MS = 10000; // 10 seconds timeout for chunk assembly
 
 // Server Configuration
