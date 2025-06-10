@@ -26,8 +26,9 @@ import { audioDebugManager } from "./audio_debug.ts";
 import { callGeminiVision } from "./vision.ts";
 import { SetVolume } from "./volume_handler.ts";
 import { rotateImage180, isValidJpegBase64 } from "./image_utils.ts";
-import { IMAGE_CHUNK_SIZE, IMAGE_CHUNK_TIMEOUT_MS, USE_ELEVENLABS_TTS } from "./config.ts";
-import { convertTextToSpeech, validateElevenLabsConfig } from "./elevenlabs_tts.ts";
+import { IMAGE_CHUNK_SIZE, IMAGE_CHUNK_TIMEOUT_MS, TTS_PROVIDER, type TTSProvider } from "./config.ts";
+import { convertTextToSpeech as convertTextToSpeechElevenLabs, validateElevenLabsConfig } from "./elevenlabs_tts.ts";
+import { convertTextToSpeech as convertTextToSpeechOpenAI, validateOpenAIConfig } from "./openai_tts.ts";
 import {
     processUserActionWithSession,
     createFlash25Session,
@@ -140,7 +141,156 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
 
         // TTS state
         let responseCreatedSent = false;
-        let elevenLabsTextBuffer = ""; // Buffer for accumulating text when using ElevenLabs
+        let ttsTextBuffer = ""; // Buffer for accumulating text when using external TTS
+        let ttsTimeout: NodeJS.Timeout | null = null; // Timeout for delayed TTS processing
+        const TTS_DELAY_MS = 250; // Wait 250ms after last generation complete before triggering TTS
+
+        // Function to handle delayed TTS processing
+        async function processTTSWithDelay() {
+            if (!ttsTextBuffer.trim()) {
+                console.log("TTS delay timeout reached, but no text to process");
+                return;
+            }
+
+            try {
+                console.log(`${TTS_PROVIDER} TTS: Processing delayed text (${ttsTextBuffer.length} chars)`);
+
+                // Send RESPONSE.CREATED before starting TTS processing
+                if (!responseCreatedSent && deviceWs.readyState === WSWebSocket.OPEN) {
+                    responseCreatedSent = true;
+                    deviceWs.send(JSON.stringify({ type: "server", msg: "RESPONSE.CREATED" }));
+                    console.log(`Device => Sent RESPONSE.CREATED (${TTS_PROVIDER})`);
+                }
+
+                // Use streaming for real-time audio processing
+                const ttsResult = await processTextWithTTSStreaming(ttsTextBuffer.trim(), async (audioChunk: Uint8Array) => {
+                    try {
+                        // Process the audio chunk through the same pipeline as Gemini audio
+                        const pcmData = Buffer.from(audioChunk);
+
+                        // Apply audio processing
+                        ttsFilter.processAudioInPlace(pcmData);
+                        boostTtsVolumeInPlace(pcmData, 3.0);
+
+                        // Encode to Opus and send frames immediately
+                        const opusFrames = await ttsState.encodePcmChunk(pcmData);
+
+                        for (const frame of opusFrames) {
+                            if (deviceWs.readyState === WSWebSocket.OPEN && !deviceClosed) {
+                                deviceWs.send(frame); // Send binary Opus frame immediately
+                            } else {
+                                console.warn("Device WS closed while sending TTS frames. Aborting send.");
+                                break;
+                            }
+                        }
+                    } catch (error) {
+                        console.error("Error processing TTS audio chunk:", error);
+                    }
+                });
+
+                if (!ttsResult) {
+                    console.error(`${TTS_PROVIDER} TTS: Provider not properly configured or failed to initialize`);
+                } else if (!ttsResult.success) {
+                    console.error(`${TTS_PROVIDER} TTS failed:`, ttsResult.error);
+                } else {
+                    console.log(`${TTS_PROVIDER} TTS streaming completed successfully`);
+                }
+
+            } catch (error) {
+                console.error(`Error processing ${TTS_PROVIDER} TTS:`, error);
+            }
+
+            // Clear the text buffer and reset state
+            ttsTextBuffer = "";
+            ttsTimeout = null;
+
+            // Send RESPONSE.COMPLETE if we actually sent audio
+            if (responseCreatedSent) {
+                console.log("Device => Sending RESPONSE.COMPLETE");
+                ttsState.reset(); // Reset Opus buffer
+                responseCreatedSent = false; // Reset flag for next response
+
+                try {
+                    // Fetch latest device info (like volume) before signaling completion
+                    const devInfo = await getDeviceInfo(supabase, user.user_id).catch(() => null); // Handle potential fetch error
+                    if (deviceWs.readyState === WSWebSocket.OPEN) {
+                        deviceWs.send(JSON.stringify({
+                            type: "server",
+                            msg: "RESPONSE.COMPLETE",
+                            volume_control: devInfo?.volume ?? 100, // Send last known or default volume
+                            pitch_factor: user.personality?.pitch_factor ?? 1,
+                        }));
+                    }
+                } catch (err) {
+                    console.error("Error sending RESPONSE.COMPLETE:", err);
+                    // Still try to send basic complete message if fetching device info failed
+                    if (deviceWs.readyState === WSWebSocket.OPEN) {
+                        deviceWs.send(JSON.stringify({ type: "server", msg: "RESPONSE.COMPLETE" }));
+                    }
+                }
+            }
+        }
+
+        // Unified TTS function to handle multiple providers
+        async function processTextWithTTS(text: string) {
+            switch (TTS_PROVIDER) {
+                case "ELEVEN_LABS":
+                    if (!validateElevenLabsConfig()) {
+                        console.error("ElevenLabs TTS is enabled but not properly configured. Falling back to Gemini audio.");
+                        return null;
+                    }
+                    const elevenLabsVoiceId = user.personality?.elevenlabs_voice_id || "21m00Tcm4TlvDq8ikWAM";
+                    return await convertTextToSpeechElevenLabs(text, elevenLabsVoiceId);
+
+                case "OPENAI":
+                    if (!validateOpenAIConfig()) {
+                        console.error("OpenAI TTS is enabled but not properly configured. Falling back to Gemini audio.");
+                        return null;
+                    }
+                    const openAIVoice = user.personality?.openai_voice || "alloy";
+                    return await convertTextToSpeechOpenAI(text, { voice: openAIVoice });
+
+                case "GEMINI":
+                default:
+                    // Gemini handles TTS internally, no external processing needed
+                    return null;
+            }
+        }
+
+        // Streaming TTS function for real-time audio processing
+        async function processTextWithTTSStreaming(text: string, onAudioChunk: (chunk: Uint8Array) => Promise<void>) {
+            switch (TTS_PROVIDER) {
+                case "ELEVEN_LABS":
+                    if (!validateElevenLabsConfig()) {
+                        console.error("ElevenLabs TTS is enabled but not properly configured. Falling back to Gemini audio.");
+                        return null;
+                    }
+                    const elevenLabsVoiceId = user.personality?.elevenlabs_voice_id || "21m00Tcm4TlvDq8ikWAM";
+                    // Import the streaming function
+                    const { convertTextToSpeechStreaming: convertElevenLabsStreaming } = await import("./elevenlabs_tts.ts");
+                    return await convertElevenLabsStreaming(text, elevenLabsVoiceId, onAudioChunk);
+
+                case "OPENAI":
+                    if (!validateOpenAIConfig()) {
+                        console.error("OpenAI TTS is enabled but not properly configured. Falling back to Gemini audio.");
+                        return null;
+                    }
+                    const openAIVoice = user.personality?.openai_voice || "alloy";
+                    // Import the streaming function
+                    const { convertTextToSpeechStreaming: convertOpenAIStreaming } = await import("./openai_tts.ts");
+                    return await convertOpenAIStreaming(text, onAudioChunk, { voice: openAIVoice });
+
+                case "GEMINI":
+                default:
+                    // Gemini handles TTS internally, no external processing needed
+                    return null;
+            }
+        }
+
+        // Check if external TTS is enabled
+        function isExternalTTSEnabled(): boolean {
+            return TTS_PROVIDER !== "GEMINI";
+        }
 
         // Vision call state
         let pendingVisionCall: { prompt: string; id?: string } | null = null;
@@ -469,12 +619,22 @@ You are now connected to a Vietnamese speaker.
             const voiceName = user.personality?.oai_voice || "Leda"; // Default voice
             console.log(`Using TTS voice: ${voiceName}`);
 
-            // Check ElevenLabs configuration if enabled
-            if (USE_ELEVENLABS_TTS) {
+            // Check TTS configuration
+            console.log(`TTS Provider: ${TTS_PROVIDER}`);
+            if (TTS_PROVIDER === "ELEVEN_LABS") {
                 if (!validateElevenLabsConfig()) {
                     console.error("ElevenLabs TTS is enabled but not properly configured. Falling back to Gemini audio.");
+                } else {
+                    console.log("ElevenLabs TTS is enabled - using TEXT mode for Gemini responses");
                 }
-                console.log("ElevenLabs TTS is enabled - using TEXT mode for Gemini responses");
+            } else if (TTS_PROVIDER === "OPENAI") {
+                if (!validateOpenAIConfig()) {
+                    console.error("OpenAI TTS is enabled but not properly configured. Falling back to Gemini audio.");
+                } else {
+                    console.log("OpenAI TTS is enabled - using TEXT mode for Gemini responses");
+                }
+            } else {
+                console.log("Using Gemini built-in TTS");
             }
 
             const gemUrl = GEMINI_LIVE_URL_TEMPLATE.replace("{api_key}", currentKey);
@@ -525,15 +685,15 @@ You are now connected to a Vietnamese speaker.
                 ];
 
                 // Configure response modalities based on TTS preference
-                const responseModalities = USE_ELEVENLABS_TTS ? ["TEXT"] : ["AUDIO"];
-                console.log(`Gemini Live setup: Using ${responseModalities[0]} mode`);
+                const responseModalities = isExternalTTSEnabled() ? ["TEXT"] : ["AUDIO"];
+                console.log(`Gemini Live setup: Using ${responseModalities[0]} mode for ${TTS_PROVIDER} TTS`);
 
                 const setupMsg = {
                     setup: {
                         model: "models/gemini-2.0-flash-live-001",
                         generationConfig: {
                             responseModalities: responseModalities,
-                            speechConfig: USE_ELEVENLABS_TTS ? undefined : {
+                            speechConfig: isExternalTTSEnabled() ? undefined : {
                                 voiceConfig: {
                                     prebuiltVoiceConfig: {
                                         voiceName: voiceName,
@@ -864,10 +1024,10 @@ You are now connected to a Vietnamese speaker.
                     if (part.text) {
                         console.log("Gemini partial text:", part.text);
 
-                        // If ElevenLabs TTS is enabled, accumulate text instead of processing immediately
-                        if (USE_ELEVENLABS_TTS && validateElevenLabsConfig()) {
-                            elevenLabsTextBuffer += part.text;
-                            console.log(`ElevenLabs: Accumulated text (${elevenLabsTextBuffer.length} chars total)`);
+                        // If external TTS is enabled, accumulate text instead of processing immediately
+                        if (isExternalTTSEnabled()) {
+                            ttsTextBuffer += part.text;
+                            console.log(`${TTS_PROVIDER} TTS: Accumulated text (${ttsTextBuffer.length} chars total)`);
                         }
                     }
 
@@ -918,70 +1078,21 @@ You are now connected to a Vietnamese speaker.
                 // Add a small delay to ensure we've collected all text parts
                 await new Promise(resolve => setTimeout(resolve, 100));
 
-                // If ElevenLabs TTS is enabled and we have accumulated text, process it now
-                if (USE_ELEVENLABS_TTS && validateElevenLabsConfig() && elevenLabsTextBuffer.trim()) {
-                    try {
-                        console.log(`ElevenLabs: Converting accumulated text to speech (${elevenLabsTextBuffer.length} chars)`);
+                // If external TTS is enabled and we have accumulated text, set up delayed processing
+                if (isExternalTTSEnabled() && ttsTextBuffer.trim()) {
+                    console.log(`${TTS_PROVIDER} TTS: Scheduling delayed processing for accumulated text (${ttsTextBuffer.length} chars)`);
 
-                        // Get user's voice preference (use ElevenLabs voice ID if available)
-                        const elevenLabsVoiceId = user.personality?.elevenlabs_voice_id || "21m00Tcm4TlvDq8ikWAM"; // Default to Rachel
-
-                        // Convert text to speech and get complete audio response
-                        const ttsResult = await convertTextToSpeech(
-                            elevenLabsTextBuffer.trim(),
-                            elevenLabsVoiceId
-                        );
-
-                        if (!ttsResult.success) {
-                            console.error("ElevenLabs TTS failed:", ttsResult.error);
-                        } else if (ttsResult.audio) {
-                            console.log(`ElevenLabs TTS completed successfully - received ${ttsResult.audio.length} bytes`);
-
-                            // Send RESPONSE.CREATED before processing audio
-                            if (!responseCreatedSent && deviceWs.readyState === WSWebSocket.OPEN) {
-                                responseCreatedSent = true;
-                                deviceWs.send(JSON.stringify({ type: "server", msg: "RESPONSE.CREATED" }));
-                                console.log("Device => Sent RESPONSE.CREATED (ElevenLabs)");
-                            }
-
-                            // Process the complete audio through the same pipeline as Gemini audio
-                            const pcmData = Buffer.from(ttsResult.audio);
-
-                            // Validate audio data format
-                            if (pcmData.length === 0) {
-                                console.warn("ElevenLabs TTS: Empty audio received");
-                            } else {
-                                if (pcmData.length % 2 !== 0) {
-                                    console.warn(`ElevenLabs TTS: Audio length (${pcmData.length}) is not even - may indicate format issue`);
-                                }
-
-                                // Apply audio processing
-                                ttsFilter.processAudioInPlace(pcmData);
-                                boostTtsVolumeInPlace(pcmData, 3.0);
-
-                                // Encode to Opus and send frames
-                                const opusFrames = await ttsState.encodePcmChunk(pcmData);
-                                let totalFramesSent = 0;
-
-                                for (const frame of opusFrames) {
-                                    if (deviceWs.readyState === WSWebSocket.OPEN && !deviceClosed) {
-                                        deviceWs.send(frame); // Send binary Opus frame
-                                        totalFramesSent++;
-                                    } else {
-                                        console.warn("Device WS closed while sending ElevenLabs TTS frames. Aborting send.");
-                                        break;
-                                    }
-                                }
-
-                                console.log(`ElevenLabs TTS: Sent ${totalFramesSent} Opus frames to device`);
-                            }
-                        }
-                    } catch (error) {
-                        console.error("Error processing ElevenLabs TTS:", error);
+                    // Clear any existing timeout
+                    if (ttsTimeout) {
+                        clearTimeout(ttsTimeout);
                     }
 
-                    // Clear the text buffer
-                    elevenLabsTextBuffer = "";
+                    // Set up new timeout for delayed TTS processing
+                    ttsTimeout = setTimeout(async () => {
+                        await processTTSWithDelay();
+                    }, TTS_DELAY_MS);
+
+                    console.log(`${TTS_PROVIDER} TTS: Will process in ${TTS_DELAY_MS}ms if no more text arrives`);
                 }
 
                 // Only send RESPONSE.COMPLETE if we actually sent audio and weren't just handling a function call
@@ -1349,7 +1460,14 @@ You are now connected to a Vietnamese speaker.
                             micAccum = new Uint8Array(0); // Discard any buffered audio on interrupt
                             ttsState.reset(); // Stop any ongoing TTS buffering
                             responseCreatedSent = false; // Reset TTS flag
-                            elevenLabsTextBuffer = ""; // Clear ElevenLabs text buffer on interrupt
+                            ttsTextBuffer = ""; // Clear TTS text buffer on interrupt
+
+                            // Clear any pending TTS timeout
+                            if (ttsTimeout) {
+                                clearTimeout(ttsTimeout);
+                                ttsTimeout = null;
+                                console.log("Device => Cleared pending TTS timeout due to interrupt");
+                            }
 
 
                             // Signal interruption/turn completion to Gemini (might be optional depending on desired interrupt behavior)

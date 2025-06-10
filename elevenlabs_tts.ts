@@ -373,10 +373,10 @@ export async function convertTextToSpeechStreaming(
                 chunkCount++;
                 totalBytes += value.length;
 
-                // Log progress every 10 chunks to reduce spam
-                if (chunkCount % 10 === 0 || chunkCount <= 3) {
-                    console.log(`ElevenLabs TTS: Streaming chunk ${chunkCount}, ${value.length} bytes (total: ${totalBytes})`);
-                }
+                // // Log progress every 10 chunks to reduce spam
+                // if (chunkCount % 10 === 0 || chunkCount <= 3) {
+                //     console.log(`ElevenLabs TTS: Streaming chunk ${chunkCount}, ${value.length} bytes (total: ${totalBytes})`);
+                // }
 
                 // Send chunk directly to callback for immediate processing
                 // No need for format conversion on individual chunks - ElevenLabs streaming already provides correct format

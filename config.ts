@@ -129,9 +129,56 @@ export const AUDIO_DEBUG = Deno.env.get("AUDIO_DEBUG") === "true";
 export const AUDIO_DEBUG_DIR = Deno.env.get("AUDIO_DEBUG_DIR") || "./debug_audio";
 export const AUDIO_DEBUG_MAX_FILES = Number(Deno.env.get("AUDIO_DEBUG_MAX_FILES") || "50");
 
+// TTS Provider Configuration
+export type TTSProvider = "GEMINI" | "ELEVEN_LABS" | "OPENAI";
+
+export const TTS_PROVIDER = (Deno.env.get("TTS_PROVIDER") || "GEMINI").toUpperCase() as TTSProvider;
+
+// Validate TTS provider
+const validProviders: TTSProvider[] = ["GEMINI", "ELEVEN_LABS", "OPENAI"];
+if (!validProviders.includes(TTS_PROVIDER)) {
+  console.warn(`Invalid TTS_PROVIDER: ${TTS_PROVIDER}. Falling back to GEMINI.`);
+  // We can't reassign the const, but we'll handle this in the validation function
+}
+
 // ElevenLabs TTS Configuration
-export const USE_ELEVENLABS_TTS = Deno.env.get("USE_ELEVENLABS_TTS") === "true";
 export const ELEVENLABS_API_KEY = Deno.env.get("ELEVENLABS_API_KEY") || "";
+
+// OpenAI TTS Configuration
+export const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY") || "";
+
+// Backward compatibility
+export const USE_ELEVENLABS_TTS = TTS_PROVIDER === "ELEVEN_LABS";
+
+/**
+ * Get the effective TTS provider (with fallback logic)
+ * @returns The TTS provider to use
+ */
+export function getEffectiveTTSProvider(): TTSProvider {
+  if (!validProviders.includes(TTS_PROVIDER)) {
+    console.warn(`Invalid TTS_PROVIDER: ${TTS_PROVIDER}. Falling back to GEMINI.`);
+    return "GEMINI";
+  }
+  return TTS_PROVIDER;
+}
+
+/**
+ * Validate TTS provider configuration
+ * @param provider The TTS provider to validate
+ * @returns boolean indicating if the provider is properly configured
+ */
+export function validateTTSProvider(provider: TTSProvider): boolean {
+  switch (provider) {
+    case "ELEVEN_LABS":
+      return ELEVENLABS_API_KEY !== "" && ELEVENLABS_API_KEY !== "your_elevenlabs_api_key_here";
+    case "OPENAI":
+      return OPENAI_API_KEY !== "" && OPENAI_API_KEY !== "your_openai_api_key_here";
+    case "GEMINI":
+      return true; // Gemini TTS is always available if Gemini API is configured
+    default:
+      return false;
+  }
+}
 
 // Server Configuration
 export const HOST = Deno.env.get("HOST") || "0.0.0.0";
