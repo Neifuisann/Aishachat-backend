@@ -33,6 +33,7 @@ declare global {
         is_story: boolean;
         key: string;
         oai_voice: 'Puck' | 'Charon' | 'Kore' | 'Fenrir' | 'Aoede' | 'Leda' | 'Orus' | 'Zephyr';
+        elevenlabs_voice_id?: string; // Optional ElevenLabs voice ID for TTS
         voice_description: string;
         title: string;
         subtitle: string;

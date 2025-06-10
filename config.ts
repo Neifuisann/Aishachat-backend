@@ -108,6 +108,7 @@ export const MIC_SAMPLE_RATE = 16000;
 export const MIC_SAMPLE_BITS = 16; // 16-bit
 export const MIC_CHANNELS = 1;
 export const MIC_ACCUM_CHUNK_SIZE = 1024; // Process audio in 1k blocks
+export const MIC_INPUT_GAIN = 3.0; // Audio input gain multiplier
 
 // ADPCM Configuration
 export const ADPCM_ENABLED = true; // Enable ADPCM compression for microphone input
@@ -122,6 +123,15 @@ export const TTS_FRAME_SIZE_BYTES = TTS_FRAME_SIZE_SAMPLES * 2; // 960 bytes (16
 // Image Streaming Configuration
 export const IMAGE_CHUNK_SIZE = 8192; // 8KB chunks for image streaming
 export const IMAGE_CHUNK_TIMEOUT_MS = 10000; // 10 seconds timeout for chunk assembly
+
+// Audio Debug Configuration
+export const AUDIO_DEBUG = Deno.env.get("AUDIO_DEBUG") === "true";
+export const AUDIO_DEBUG_DIR = Deno.env.get("AUDIO_DEBUG_DIR") || "./debug_audio";
+export const AUDIO_DEBUG_MAX_FILES = Number(Deno.env.get("AUDIO_DEBUG_MAX_FILES") || "50");
+
+// ElevenLabs TTS Configuration
+export const USE_ELEVENLABS_TTS = Deno.env.get("USE_ELEVENLABS_TTS") === "true";
+export const ELEVENLABS_API_KEY = Deno.env.get("ELEVENLABS_API_KEY") || "";
 
 // Server Configuration
 export const HOST = Deno.env.get("HOST") || "0.0.0.0";

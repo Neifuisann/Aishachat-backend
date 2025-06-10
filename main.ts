@@ -22,6 +22,7 @@ import {
   updateUserSessionTime,
 } from "./supabase.ts";
 import { setupWebSocketConnectionHandler } from "./websocket_handler.ts";
+import { audioDebugManager } from "./audio_debug.ts";
 
 import {
   isDev,
@@ -98,8 +99,18 @@ server.listen(PORT, HOST, () => {
 // -----------------------------------------------------------------------------
 // Graceful Shutdown Handler
 // -----------------------------------------------------------------------------
-Deno.addSignalListener("SIGINT", () => {
+Deno.addSignalListener("SIGINT", async () => {
   console.log("\nReceived SIGINT, shutting down...");
+
+  // First, end all active audio debug sessions
+  console.log("Ending all audio debug sessions...");
+  try {
+    await audioDebugManager.endAllSessions("server_shutdown");
+    console.log("Audio debug sessions ended.");
+  } catch (err) {
+    console.error("Error ending audio debug sessions:", err);
+  }
+
   let serversClosed = 0;
   const totalServers = 2; // HTTP and WebSocket
 
@@ -131,11 +142,16 @@ Deno.addSignalListener("SIGINT", () => {
     checkExit();
   });
 
-  // Add a timeout as a safety measure
-  setTimeout(() => {
-    console.warn("Shutdown timeout reached. Forcing exit.");
+  // Add a timeout as a safety measure (increased to allow audio debug file saving)
+  setTimeout(async () => {
+    console.warn("Shutdown timeout reached. Forcing audio debug cleanup and exit.");
+    try {
+      await audioDebugManager.endAllSessions("forced_shutdown");
+    } catch (err) {
+      console.error("Error in forced audio debug cleanup:", err);
+    }
     Deno.exit(1);
-  }, 5000); // 5 seconds timeout
+  }, 10000); // 10 seconds timeout (increased from 5)
 
 });
 

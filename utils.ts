@@ -9,9 +9,9 @@ export const authenticateUser = async (
     authToken: string,
 ): Promise<IUser> => {
     try {
-        const jwtSecret = Deno.env.get("JWT_SECRET_KEY");
+        const jwtSecret = Deno.env.get("JWT_SECRET");
 
-        if (!jwtSecret) throw new Error("JWT_SECRET_KEY not configured");
+        if (!jwtSecret) throw new Error("JWT_SECRET not configured");
 
         console.log("jwtSecret", jwtSecret);
         const secretBytes = new TextEncoder().encode(jwtSecret);

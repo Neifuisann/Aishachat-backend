@@ -3,6 +3,7 @@ import {
     TTS_SAMPLE_RATE,
     TTS_FRAME_SIZE_BYTES,
     MIC_SAMPLE_RATE,
+    MIC_INPUT_GAIN,
     ADPCM_ENABLED
 } from "./config.ts";
 import { ADPCMEncoder, ADPCM } from "./adpcm.ts";
@@ -113,8 +114,9 @@ export class AudioFilter {
 
     constructor(
         sampleRate: number,
-        highpassCutoff = 100.0, // Adjusted default high-pass cutoff (Hz)
-        lowpassCutoff = 7000.0   // Adjusted default low-pass cutoff (Hz)
+        highpassCutoff = 40.0, // Adjusted default high-pass cutoff (Hz)
+        lowpassCutoff = 9000.0,   // Adjusted default low-pass cutoff (Hz)
+        private inputGain = MIC_INPUT_GAIN // Audio input gain multiplier
     ) {
         // --- Basic Validation ---
         if (sampleRate <= 0) throw new Error("Sample rate must be positive.");
@@ -128,7 +130,7 @@ export class AudioFilter {
         if (highpassCutoff > 0 && lowpassCutoff > 0 && highpassCutoff >= lowpassCutoff) {
             console.warn(`High-pass cutoff (${highpassCutoff} Hz) is >= low-pass cutoff (${lowpassCutoff} Hz). Filter might block most frequencies.`);
         }
-        console.log(`Initializing 2nd Order AudioFilter: SR=${sampleRate}Hz, HP=${highpassCutoff}Hz, LP=${lowpassCutoff}Hz`);
+        console.log(`Initializing 2nd Order AudioFilter: SR=${sampleRate}Hz, HP=${highpassCutoff}Hz, LP=${lowpassCutoff}Hz, Gain=${this.inputGain}x`);
 
         // --- Calculate High-Pass Butterworth Biquad Coefficients ---
         if (highpassCutoff > 0) {
@@ -178,8 +180,8 @@ export class AudioFilter {
             this.lp_x1 = this.lp_b1 * hp_yn - this.lp_a1 * lp_yn + this.lp_x2;
             this.lp_x2 = this.lp_b2 * hp_yn - this.lp_a2 * lp_yn;
 
-            // Removed the fixed gain (* 8)
-            let finalOut = lp_yn; 
+            // Apply configurable input gain
+            let finalOut = lp_yn * this.inputGain;
 
             // Clip to Int16 range
             finalOut = Math.max(-32768, Math.min(32767, finalOut));

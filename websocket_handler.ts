@@ -8,6 +8,7 @@ import {
     GEMINI_LIVE_URL_TEMPLATE,
     MIC_SAMPLE_RATE,
     MIC_ACCUM_CHUNK_SIZE,
+    MIC_INPUT_GAIN,
     TTS_SAMPLE_RATE,
     ADPCM_ENABLED,
     ADPCM_BUFFER_SIZE,
@@ -20,11 +21,13 @@ import {
 } from "./audio.ts";
 
 import { ADPCMStreamProcessor, ADPCM } from "./adpcm.ts";
+import { audioDebugManager } from "./audio_debug.ts";
 
 import { callGeminiVision } from "./vision.ts";
 import { SetVolume } from "./volume_handler.ts";
 import { rotateImage180, isValidJpegBase64 } from "./image_utils.ts";
-import { IMAGE_CHUNK_SIZE, IMAGE_CHUNK_TIMEOUT_MS } from "./config.ts";
+import { IMAGE_CHUNK_SIZE, IMAGE_CHUNK_TIMEOUT_MS, USE_ELEVENLABS_TTS } from "./config.ts";
+import { convertTextToSpeech, validateElevenLabsConfig } from "./elevenlabs_tts.ts";
 import {
     processUserActionWithSession,
     createFlash25Session,
@@ -67,6 +70,9 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
 
         // Create unique session ID for this Live Gemini connection
         const sessionId = `live-${user.user_id}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+        // Initialize audio debug session
+        audioDebugManager.startSession(sessionId);
 
         // Create device operation callbacks for Flash 2.5
         const deviceCallbacks: DeviceOperationCallbacks = {
@@ -119,9 +125,10 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
 
         // Microphone data accumulation & filter
         let micAccum = new Uint8Array(0);
+        let lastCompressionRatio: number | undefined; // Track compression ratio for debug
         // Use gentler filter settings to avoid audio corruption
         // Reduced high-pass cutoff and increased low-pass cutoff for better speech preservation
-        const micFilter = new AudioFilter(MIC_SAMPLE_RATE, 100, 7000);
+        const micFilter = new AudioFilter(MIC_SAMPLE_RATE, 300, 3500, MIC_INPUT_GAIN);
 
         // ADPCM processor for compressed audio from ESP32
         const adpcmProcessor = new ADPCMStreamProcessor(ADPCM_BUFFER_SIZE);
@@ -129,10 +136,11 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
         // TTS Filter (using the same class, but with TTS sample rate)
         // Explicitly pass sample rate and default cutoffs (can be changed here)
         // Lowering LP cutoff to potentially reduce high-frequency buzzing
-        const ttsFilter = new AudioFilter(TTS_SAMPLE_RATE, 300, 4000);
+        const ttsFilter = new AudioFilter(TTS_SAMPLE_RATE, 300, 4000, 6.0);
 
         // TTS state
         let responseCreatedSent = false;
+        let elevenLabsTextBuffer = ""; // Buffer for accumulating text when using ElevenLabs
 
         // Vision call state
         let pendingVisionCall: { prompt: string; id?: string } | null = null;
@@ -461,6 +469,14 @@ You are now connected to a Vietnamese speaker.
             const voiceName = user.personality?.oai_voice || "Leda"; // Default voice
             console.log(`Using TTS voice: ${voiceName}`);
 
+            // Check ElevenLabs configuration if enabled
+            if (USE_ELEVENLABS_TTS) {
+                if (!validateElevenLabsConfig()) {
+                    console.error("ElevenLabs TTS is enabled but not properly configured. Falling back to Gemini audio.");
+                }
+                console.log("ElevenLabs TTS is enabled - using TEXT mode for Gemini responses");
+            }
+
             const gemUrl = GEMINI_LIVE_URL_TEMPLATE.replace("{api_key}", currentKey);
             console.log(`Attempting to connect to Gemini Live with API key ${apiKeyManager.getCurrentKey() === apiKeyManager.getCurrentKey() ? 'current' : 'rotated'}`);
 
@@ -508,12 +524,16 @@ You are now connected to a Vietnamese speaker.
                     }
                 ];
 
+                // Configure response modalities based on TTS preference
+                const responseModalities = USE_ELEVENLABS_TTS ? ["TEXT"] : ["AUDIO"];
+                console.log(`Gemini Live setup: Using ${responseModalities[0]} mode`);
+
                 const setupMsg = {
                     setup: {
                         model: "models/gemini-2.0-flash-live-001",
                         generationConfig: {
-                            responseModalities: ["AUDIO"],
-                            speechConfig: {
+                            responseModalities: responseModalities,
+                            speechConfig: USE_ELEVENLABS_TTS ? undefined : {
                                 voiceConfig: {
                                     prebuiltVoiceConfig: {
                                         voiceName: voiceName,
@@ -843,6 +863,12 @@ You are now connected to a Vietnamese speaker.
                     // Check for Text part (Log intermediate text)
                     if (part.text) {
                         console.log("Gemini partial text:", part.text);
+
+                        // If ElevenLabs TTS is enabled, accumulate text instead of processing immediately
+                        if (USE_ELEVENLABS_TTS && validateElevenLabsConfig()) {
+                            elevenLabsTextBuffer += part.text;
+                            console.log(`ElevenLabs: Accumulated text (${elevenLabsTextBuffer.length} chars total)`);
+                        }
                     }
 
 
@@ -888,6 +914,76 @@ You are now connected to a Vietnamese speaker.
             // --- Handle Generation Complete (End of Assistant's Turn/Speech) ---
             if (msg.serverContent?.generationComplete) {
                 console.log("Gemini => Generation Complete.");
+
+                // Add a small delay to ensure we've collected all text parts
+                await new Promise(resolve => setTimeout(resolve, 100));
+
+                // If ElevenLabs TTS is enabled and we have accumulated text, process it now
+                if (USE_ELEVENLABS_TTS && validateElevenLabsConfig() && elevenLabsTextBuffer.trim()) {
+                    try {
+                        console.log(`ElevenLabs: Converting accumulated text to speech (${elevenLabsTextBuffer.length} chars)`);
+
+                        // Get user's voice preference (use ElevenLabs voice ID if available)
+                        const elevenLabsVoiceId = user.personality?.elevenlabs_voice_id || "21m00Tcm4TlvDq8ikWAM"; // Default to Rachel
+
+                        // Convert text to speech and get complete audio response
+                        const ttsResult = await convertTextToSpeech(
+                            elevenLabsTextBuffer.trim(),
+                            elevenLabsVoiceId
+                        );
+
+                        if (!ttsResult.success) {
+                            console.error("ElevenLabs TTS failed:", ttsResult.error);
+                        } else if (ttsResult.audio) {
+                            console.log(`ElevenLabs TTS completed successfully - received ${ttsResult.audio.length} bytes`);
+
+                            // Send RESPONSE.CREATED before processing audio
+                            if (!responseCreatedSent && deviceWs.readyState === WSWebSocket.OPEN) {
+                                responseCreatedSent = true;
+                                deviceWs.send(JSON.stringify({ type: "server", msg: "RESPONSE.CREATED" }));
+                                console.log("Device => Sent RESPONSE.CREATED (ElevenLabs)");
+                            }
+
+                            // Process the complete audio through the same pipeline as Gemini audio
+                            const pcmData = Buffer.from(ttsResult.audio);
+
+                            // Validate audio data format
+                            if (pcmData.length === 0) {
+                                console.warn("ElevenLabs TTS: Empty audio received");
+                            } else {
+                                if (pcmData.length % 2 !== 0) {
+                                    console.warn(`ElevenLabs TTS: Audio length (${pcmData.length}) is not even - may indicate format issue`);
+                                }
+
+                                // Apply audio processing
+                                ttsFilter.processAudioInPlace(pcmData);
+                                boostTtsVolumeInPlace(pcmData, 3.0);
+
+                                // Encode to Opus and send frames
+                                const opusFrames = await ttsState.encodePcmChunk(pcmData);
+                                let totalFramesSent = 0;
+
+                                for (const frame of opusFrames) {
+                                    if (deviceWs.readyState === WSWebSocket.OPEN && !deviceClosed) {
+                                        deviceWs.send(frame); // Send binary Opus frame
+                                        totalFramesSent++;
+                                    } else {
+                                        console.warn("Device WS closed while sending ElevenLabs TTS frames. Aborting send.");
+                                        break;
+                                    }
+                                }
+
+                                console.log(`ElevenLabs TTS: Sent ${totalFramesSent} Opus frames to device`);
+                            }
+                        }
+                    } catch (error) {
+                        console.error("Error processing ElevenLabs TTS:", error);
+                    }
+
+                    // Clear the text buffer
+                    elevenLabsTextBuffer = "";
+                }
+
                 // Only send RESPONSE.COMPLETE if we actually sent audio and weren't just handling a function call
                 if (responseCreatedSent) {
                     console.log("Device => Sending RESPONSE.COMPLETE");
@@ -962,7 +1058,7 @@ You are now connected to a Vietnamese speaker.
                 const rawSize = raw instanceof ArrayBuffer ? raw.byteLength :
                                Buffer.isBuffer(raw) ? raw.length :
                                Array.isArray(raw) ? raw.reduce((sum, buf) => sum + buf.length, 0) : 0;
-                console.log(`Device => Received binary message: ${rawSize} bytes`);
+                //console.log(`Device => Received binary message: ${rawSize} bytes`);
             } else {
                 const rawString = raw.toString("utf-8");
                 if (rawString.length > 1000) {
@@ -996,14 +1092,16 @@ You are now connected to a Vietnamese speaker.
                 if (ADPCM_ENABLED) {
                     // Decompress ADPCM data to PCM
                     pcmChunk = adpcmProcessor.decodeADPCMChunk(audioChunk);
+                    lastCompressionRatio = pcmChunk.length / audioChunk.length;
+
                     // Debug: Log compression ratio (only occasionally to avoid spam)
                     if (audioChunk.length > 0 && Math.random() < 0.01) { // Log ~1% of chunks
-                        const compressionRatio = pcmChunk.length / audioChunk.length;
-                        console.log(`ADPCM: Decompressed ${audioChunk.length} bytes to ${pcmChunk.length} bytes (${compressionRatio.toFixed(1)}x expansion)`);
+                        console.log(`ADPCM: Decompressed ${audioChunk.length} bytes to ${pcmChunk.length} bytes (${lastCompressionRatio?.toFixed(1)}x expansion)`);
                     }
                 } else {
                     // Use raw PCM data
                     pcmChunk = audioChunk;
+                    lastCompressionRatio = undefined;
                 }
 
                 // Accumulate buffer
@@ -1020,13 +1118,15 @@ You are now connected to a Vietnamese speaker.
                     // Debug: Log audio chunk info periodically
                     //console.log(`Audio chunk: ${chunkToSend.length} bytes, first few samples: ${Array.from(chunkToSend.slice(0, 8)).join(',')}`);
 
-                    // TEMPORARY: Skip filtering to test if filter is causing issues
-                    // TODO: Re-enable filtering after testing
+                    // Apply filtering and gain to the audio chunk
                     const filteredChunk = new Uint8Array(chunkToSend);
                     micFilter.processAudioInPlace(filteredChunk);
 
-                    // Use original unfiltered audio for now
-                    const audioToSend = chunkToSend;
+                    // Use the filtered audio (with gain applied)
+                    const audioToSend = filteredChunk;
+
+                    // Add processed audio data to debug session (after filtering/gain)
+                    audioDebugManager.addAudioData(sessionId, audioToSend, lastCompressionRatio);
 
                     // Base64 encode the audio
                     const b64 = Buffer.from(audioToSend).toString("base64");
@@ -1203,9 +1303,14 @@ You are now connected to a Vietnamese speaker.
                             if (micAccum.length > 0 && isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN) {
                                 console.log(`Flushing remaining ${micAccum.length} bytes of audio.`);
 
-                                // TEMPORARY: Skip filtering on final chunk too
-                                // micFilter.processAudioInPlace(micAccum);
-                                const b64 = Buffer.from(micAccum).toString("base64");
+                                // Apply filtering and gain to the final chunk
+                                const finalChunk = new Uint8Array(micAccum);
+                                micFilter.processAudioInPlace(finalChunk);
+
+                                // Add final processed audio to debug session
+                                audioDebugManager.addAudioData(sessionId, finalChunk, lastCompressionRatio);
+
+                                const b64 = Buffer.from(finalChunk).toString("base64");
                                 micAccum = new Uint8Array(0); // Clear after processing
 
                                 const gemMsg = {
@@ -1244,6 +1349,7 @@ You are now connected to a Vietnamese speaker.
                             micAccum = new Uint8Array(0); // Discard any buffered audio on interrupt
                             ttsState.reset(); // Stop any ongoing TTS buffering
                             responseCreatedSent = false; // Reset TTS flag
+                            elevenLabsTextBuffer = ""; // Clear ElevenLabs text buffer on interrupt
 
 
                             // Signal interruption/turn completion to Gemini (might be optional depending on desired interrupt behavior)
@@ -1301,6 +1407,10 @@ You are now connected to a Vietnamese speaker.
                     clearTimeout(retryTimeoutId);
                     retryTimeoutId = null;
                 }
+                // End audio debug session on error
+                audioDebugManager.endSession(sessionId, "device_error").catch(err =>
+                    console.error("Failed to end audio debug session on device error:", err)
+                );
                 geminiWs?.close(1011, "Device error");
             }
         });
@@ -1339,6 +1449,9 @@ You are now connected to a Vietnamese speaker.
                 geminiWs.close(1000, "Device disconnected");
             }
             geminiWs = null; // Ensure reference is cleared
+
+            // End audio debug session
+            await audioDebugManager.endSession(sessionId, "connection_closed");
 
             // Destroy Flash 2.5 session
             console.log(`Destroying Flash 2.5 session: ${sessionId}`);
