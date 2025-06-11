@@ -205,6 +205,20 @@ class ScheduleConversationHelper {
 }
 
 // ===========================
+// Utility Functions
+// ===========================
+
+function truncateSessionId(sessionId: string): string {
+    if (sessionId.startsWith('live-')) {
+        const parts = sessionId.split('-');
+        if (parts.length >= 3) {
+            return `${parts[0]}-${parts[1]}...`;
+        }
+    }
+    return sessionId.length > 20 ? sessionId.substring(0, 20) + '...' : sessionId;
+}
+
+// ===========================
 // Constants & Configuration
 // ===========================
 
@@ -1131,7 +1145,7 @@ class Flash25SessionManager {
         deviceCallbacks?: DeviceOperationCallbacks,
         user?: any,
     ): void {
-        logger.info(`Creating Flash 2.5 session for Live session: ${sessionId}`);
+        logger.info(`Creating Flash 2.5 session for Live session: ${truncateSessionId(sessionId)}`);
 
         const initialContents = [{
             role: 'user',
@@ -1148,7 +1162,7 @@ class Flash25SessionManager {
             scheduleContext: {},
         });
 
-        logger.info(`Flash 2.5 session ${sessionId} created successfully`);
+        logger.info(`Flash 2.5 session ${truncateSessionId(sessionId)} created successfully`);
     }
 
     async analyzeImage(
@@ -1245,7 +1259,7 @@ class Flash25SessionManager {
                 parts: userParts,
             });
 
-            logger.info(`Processing action in session ${sessionId}`);
+            logger.info(`Processing action in session ${truncateSessionId(sessionId)}`);
 
             const configToUse = await this.getConfiguration(session, supabase);
 

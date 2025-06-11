@@ -127,6 +127,29 @@ const KEEP_ALIVE_INTERVAL = 30000; // 30 seconds
 const IMAGE_CAPTURE_TIMEOUT = 15000; // 15 seconds
 const TTS_DELAY_MS = 100; // Wait 100ms after last generation complete before triggering TTS
 
+// ===== Utility Functions =====
+
+function truncateSessionId(sessionId: string): string {
+    if (sessionId.startsWith('live-')) {
+        const parts = sessionId.split('-');
+        if (parts.length >= 3) {
+            return `${parts[0]}-${parts[1]}...`;
+        }
+    }
+    return sessionId.length > 20 ? sessionId.substring(0, 20) + '...' : sessionId;
+}
+
+function extractUserCommand(functionCalls: any[]): string {
+    const transferModalCall = functionCalls.find(call => call.name === 'transferModal');
+    return transferModalCall?.args?.userCommand || 'N/A';
+}
+
+function extractResult(responsePayload: any): string {
+    const response = responsePayload?.functionResponses?.[0]?.response?.result;
+    if (!response) return 'N/A';
+    return response;
+}
+
 // ===== TTS Manager =====
 
 class TTSManager {
@@ -202,12 +225,12 @@ class TTSManager {
         userId: string,
     ) {
         if (!this.ttsState.ttsTextBuffer.trim()) {
-            this.logger.log('TTS delay timeout reached, but no text to process');
+            this.logger.info('TTS delay timeout reached, but no text to process');
             return;
         }
 
         try {
-            this.logger.log(
+            this.logger.info(
                 `${TTS_PROVIDER} TTS: Processing delayed text (${this.ttsState.ttsTextBuffer.length} chars)`,
             );
 
@@ -217,7 +240,7 @@ class TTSManager {
             ) {
                 this.ttsState.responseCreatedSent = true;
                 this.deviceWs.send(JSON.stringify({ type: 'server', msg: 'RESPONSE.CREATED' }));
-                this.logger.log(`Device => Sent RESPONSE.CREATED (${TTS_PROVIDER})`);
+                this.logger.info(`Device => Sent RESPONSE.CREATED (${TTS_PROVIDER})`);
             }
 
             // Use streaming for real-time audio processing
@@ -254,7 +277,7 @@ class TTSManager {
             } else if (!ttsResult.success) {
                 this.logger.error(`${TTS_PROVIDER} TTS failed:`, ttsResult.error);
             } else {
-                this.logger.log(`${TTS_PROVIDER} TTS streaming completed successfully`);
+                this.logger.info(`${TTS_PROVIDER} TTS streaming completed successfully`);
             }
         } catch (error) {
             this.logger.error(`Error processing ${TTS_PROVIDER} TTS:`, error);
@@ -271,7 +294,7 @@ class TTSManager {
     }
 
     private async sendResponseComplete(supabase: SupabaseClient, userId: string) {
-        this.logger.log('Device => Sending RESPONSE.COMPLETE');
+        this.logger.info('Device => Sending RESPONSE.COMPLETE');
         ttsState.reset();
         this.ttsState.responseCreatedSent = false;
         this.ttsState.toolCallInProgress = false;
@@ -335,12 +358,12 @@ class ImageHandler {
         // Rotate image
         let processedBase64Jpeg = base64Jpeg;
         try {
-            this.logger.log(
+            this.logger.info(
                 'Rotating image 180 degrees to correct ESP32 upside-down orientation...',
             );
             if (isValidJpegBase64(base64Jpeg)) {
                 processedBase64Jpeg = await rotateImage180(base64Jpeg);
-                this.logger.log('Image rotation completed successfully.');
+                this.logger.info('Image rotation completed successfully.');
             } else {
                 this.logger.warn('Invalid JPEG format detected, skipping rotation.');
             }
@@ -353,7 +376,7 @@ class ImageHandler {
         // Return image data to Flash 2.5's GetVision function via callback
         if (this.imageState.pendingVisionCall?.resolve) {
             try {
-                this.logger.log(
+                this.logger.info(
                     `Image captured successfully (${
                         Math.round(processedBase64Jpeg.length * 3 / 4 / 1024)
                     } KB), returning to Flash 2.5`,
@@ -386,7 +409,7 @@ class ImageHandler {
 
     private async uploadImageToStorage(base64Jpeg: string) {
         try {
-            this.logger.log(
+            this.logger.info(
                 `Received image data (${
                     Math.round(base64Jpeg.length * 3 / 4 / 1024)
                 } KB), attempting upload...`,
@@ -410,7 +433,7 @@ class ImageHandler {
                 );
                 this.imageState.photoCaptureFailed = true;
             } else if (uploadData) {
-                this.logger.log(
+                this.logger.info(
                     `Supabase Storage: Image successfully uploaded to ${bucketName}/${uploadData.path}`,
                 );
             }
@@ -442,7 +465,7 @@ class ImageHandler {
             const functionResponse = { toolResponse: functionResponsePayload };
             try {
                 geminiWs.send(JSON.stringify(functionResponse));
-                this.logger.log('Gemini Live => Sent Function Response (Image Error)');
+                this.logger.info('Gemini Live => Sent Function Response (Image Error)');
             } catch (err) {
                 this.logger.error('Failed to send error function response to Gemini:', err);
             }
@@ -451,7 +474,7 @@ class ImageHandler {
     }
 
     handleImageChunk(msgObj: any, geminiWs: WSWebSocket | null, isGeminiConnected: boolean) {
-        this.logger.log(`Received image chunk ${msgObj.chunk_index + 1}/${msgObj.total_chunks}`);
+        this.logger.info(`Received image chunk ${msgObj.chunk_index + 1}/${msgObj.total_chunks}`);
 
         if (!this.imageState.waitingForImage || !this.imageState.pendingVisionCall) {
             this.logger.warn('Received image chunk but not waiting for image. Ignoring.');
@@ -480,7 +503,7 @@ class ImageHandler {
         this.imageState.imageChunkAssembly.chunks.set(msgObj.chunk_index, msgObj.data);
         this.imageState.imageChunkAssembly.receivedCount++;
 
-        this.logger.log(
+        this.logger.info(
             `Stored chunk ${msgObj.chunk_index}, total received: ${this.imageState.imageChunkAssembly.receivedCount}/${this.imageState.imageChunkAssembly.totalChunks}`,
         );
 
@@ -494,7 +517,7 @@ class ImageHandler {
     }
 
     private async assembleCompleteImage(geminiWs: WSWebSocket | null, isGeminiConnected: boolean) {
-        this.logger.log('All chunks received, assembling image...');
+        this.logger.info('All chunks received, assembling image...');
 
         // Clear timeout
         if (this.imageState.chunkTimeoutId) {
@@ -516,7 +539,7 @@ class ImageHandler {
             completeBase64 += chunk;
         }
 
-        this.logger.log(`Image assembly complete - ${completeBase64.length} characters`);
+        this.logger.info(`Image assembly complete - ${completeBase64.length} characters`);
 
         // Clean up chunk assembly
         this.imageState.imageChunkAssembly = null;
@@ -543,7 +566,7 @@ class ImageHandler {
             const functionResponse = { toolResponse: functionResponsePayload };
             try {
                 geminiWs.send(JSON.stringify(functionResponse));
-                this.logger.log('Gemini Live => Sent chunk timeout error response');
+                this.logger.info('Gemini Live => Sent chunk timeout error response');
             } catch (err) {
                 this.logger.error('Failed to send chunk timeout error response to Gemini:', err);
             }
@@ -611,7 +634,7 @@ class GeminiConnectionManager {
             this.imageState.waitingForImage = true;
 
             if (this.deviceWs.readyState === WSWebSocket.OPEN) {
-                this.logger.log(
+                this.logger.info(
                     `Device => Sending REQUEST.PHOTO (triggered by Flash 2.5 GetVision: ${callId})`,
                 );
                 this.deviceWs.send(JSON.stringify({ type: 'server', msg: 'REQUEST.PHOTO' }));
@@ -628,7 +651,7 @@ class GeminiConnectionManager {
     }
 
     private async setVolume(volumeLevel: number, callId: string): Promise<any> {
-        this.logger.log(`*SetVolume (ID: ${callId}) called with volume: ${volumeLevel}`);
+        this.logger.info(`*SetVolume (ID: ${callId}) called with volume: ${volumeLevel}`);
 
         if (typeof volumeLevel !== 'number' || volumeLevel < 0 || volumeLevel > 100) {
             return {
@@ -643,7 +666,7 @@ class GeminiConnectionManager {
                 this.context.user.user_id,
                 volumeLevel,
             );
-            this.logger.log(`SetVolume result for ID ${callId}:`, volumeResult);
+            this.logger.info(`SetVolume result:`, volumeResult);
             return volumeResult;
         } catch (err) {
             this.logger.error(`Error executing SetVolume for ID ${callId}:`, err);
@@ -662,11 +685,11 @@ class GeminiConnectionManager {
         }
 
         const voiceName = this.context.user.personality?.oai_voice || 'Leda';
-        this.logger.log(`Using TTS voice: ${voiceName}`);
-        this.logger.log(`TTS Provider: ${TTS_PROVIDER}`);
+        this.logger.info(`Using TTS voice: ${voiceName}`);
+        this.logger.info(`TTS Provider: ${TTS_PROVIDER}`);
 
         const gemUrl = GEMINI_LIVE_URL_TEMPLATE.replace('{api_key}', currentKey);
-        this.logger.log('Attempting to connect to Gemini Live');
+        this.logger.info('Attempting to connect to Gemini Live');
 
         this.geminiWs = new WSWebSocket(gemUrl);
         this.setupGeminiEventHandlers(systemPrompt, firstMessage, voiceName);
@@ -699,8 +722,8 @@ class GeminiConnectionManager {
     private handleGeminiOpen(systemPrompt: string, firstMessage: string | null, voiceName: string) {
         this.connectionState.isGeminiConnected = true;
         this.connectionState.sessionStartTime = Date.now();
-        this.logger.log('Gemini Live connection established.');
-        this.logger.log(
+        this.logger.info('Gemini Live connection established.');
+        this.logger.info(
             `Flash Live Mode: ${
                 USE_FLASH_LIVE_AS_BASE
                     ? 'Current (Websocket as base)'
@@ -713,13 +736,13 @@ class GeminiConnectionManager {
             () => this.sendKeepAliveAudioChunk(),
             KEEP_ALIVE_INTERVAL,
         );
-        this.logger.log(`Started keep-alive timer (${KEEP_ALIVE_INTERVAL / 1000}s interval)`);
+        this.logger.info(`Started keep-alive timer (${KEEP_ALIVE_INTERVAL / 1000}s interval)`);
 
         // Configure tools based on mode
         const tools = this.getToolsConfiguration();
         const responseModalities = this.ttsManager.isExternalTTSEnabled() ? ['TEXT'] : ['AUDIO'];
 
-        this.logger.log(
+        this.logger.info(
             `Gemini Live setup: Using ${responseModalities[0]} mode for ${TTS_PROVIDER} TTS`,
         );
 
@@ -732,7 +755,7 @@ class GeminiConnectionManager {
 
         try {
             this.geminiWs?.send(JSON.stringify(setupMsg));
-            this.logger.log('Sent Gemini setup message with function calling and audio request.');
+            this.logger.info('Sent Gemini setup message with function calling and audio request.');
 
             // Send initial turn
             this.sendInitialTurn(firstMessage);
@@ -849,7 +872,7 @@ class GeminiConnectionManager {
 
     private sendInitialTurn(firstMessage: string | null) {
         if (firstMessage) {
-            this.logger.log('Sending first message as initial turn:', firstMessage);
+            this.logger.info('Sending first message as initial turn:', firstMessage);
             const userTurn = {
                 clientContent: {
                     turns: [{ role: 'user', parts: [{ text: firstMessage }] }],
@@ -858,7 +881,7 @@ class GeminiConnectionManager {
             };
             this.geminiWs?.send(JSON.stringify(userTurn));
         } else {
-            this.logger.log("No chat history, sending 'Xin chào' as initial turn.");
+            this.logger.info("No chat history, sending 'Xin chào' as initial turn.");
             const userTurn = {
                 clientContent: {
                     turns: [{ role: 'user', parts: [{ text: 'Xin chào!' }] }],
@@ -891,7 +914,7 @@ class GeminiConnectionManager {
 
         // Handle setup complete
         if (msg.setupComplete) {
-            this.logger.log('Setup Complete.');
+            this.logger.info('Setup Complete.');
             return;
         }
 
@@ -921,17 +944,18 @@ class GeminiConnectionManager {
     }
 
     private async handleToolCalls(functionCalls: any[]) {
-        this.logger.log('Received Top-Level toolCall:', JSON.stringify(functionCalls, null, 2));
+        const userCommand = extractUserCommand(functionCalls);
+        this.logger.info(`Received toolCall: ${functionCalls.map(c => c.name).join(', ')} | userCommand: "${userCommand}"`);
 
         if (this.ttsState.toolCallInProgress) {
-            this.logger.log(
+            this.logger.info(
                 'Tool call already in progress, ignoring new tool calls until RESPONSE.COMPLETE is sent',
             );
             return;
         }
 
         this.ttsState.toolCallInProgress = true;
-        this.logger.log(
+        this.logger.info(
             'Tool call lock acquired for:',
             functionCalls.map((c) => c.name).join(', '),
         );
@@ -952,7 +976,7 @@ class GeminiConnectionManager {
     private async handleActionCall(call: any) {
         const callId = call.id;
         const userCommand = call.args?.userCommand;
-        this.logger.log(`*Action (ID: ${callId}) called with command: "${userCommand}"`);
+        this.logger.info(`*Action (ID: ${callId}) called with command: "${userCommand}"`);
 
         let result = { success: false, message: 'Unknown error in Action.' };
 
@@ -964,9 +988,8 @@ class GeminiConnectionManager {
                     this.context.supabase,
                     this.context.user.user_id,
                 );
-                this.logger.log(
-                    `Action result for ID ${callId} (session: ${this.connectionState.sessionId}):`,
-                    result,
+                this.logger.info(
+                    `Action result for (session: ${truncateSessionId(this.connectionState.sessionId)}): ${result.success ? 'Success' : 'Failed'}`,
                 );
             } catch (err) {
                 this.logger.error(`Error executing Action for ID ${callId}:`, err);
@@ -989,12 +1012,12 @@ class GeminiConnectionManager {
         const callId = call.id;
         const userCommand = call.args?.userCommand;
         const searchResults = call.args?.searchResults;
-        this.logger.log(`*transferModal (ID: ${callId})`);
+        this.logger.info(`*transferModal (ID: ${callId}) | userCommand: "${userCommand}"`);
 
         // Send RESPONSE.CREATED state to device
         if (this.deviceWs.readyState === WSWebSocket.OPEN) {
             this.deviceWs.send(JSON.stringify({ type: 'server', msg: 'RESPONSE.CREATED' }));
-            this.logger.log('Device => Sent SPEAKING state (transferModal triggered)');
+            this.logger.info('Device => Sent SPEAKING state (transferModal triggered)');
         }
 
         let result = { success: false, message: 'Unknown error in transferModal.' };
@@ -1013,7 +1036,7 @@ class GeminiConnectionManager {
                     this.context.supabase,
                     this.context.user.user_id,
                 );
-                this.logger.log(`transferModal result for ID ${callId}`);
+                this.logger.info(`transferModal result (session: ${truncateSessionId(this.connectionState.sessionId)}): Success`);
             } catch (err) {
                 this.logger.error(`Error executing transferModal for ID ${callId}:`, err);
                 result = {
@@ -1045,9 +1068,9 @@ class GeminiConnectionManager {
             const functionResponse = { toolResponse: functionResponsePayload };
             try {
                 this.geminiWs.send(JSON.stringify(functionResponse));
-                this.logger.log(
-                    `Sent Function Response for ${functionName} (ID: ${callId}):`,
-                    JSON.stringify(functionResponsePayload),
+                const result = extractResult(functionResponsePayload);
+                this.logger.info(
+                    `Sent Function Response for ${functionName} (ID: ${callId}) | result: "${result}"`,
                 );
             } catch (err) {
                 this.logger.error(
@@ -1067,7 +1090,7 @@ class GeminiConnectionManager {
             !(part.inlineData && part.inlineData.mimeType === 'audio/pcm;rate=24000')
         );
         if (partsToLog.length > 0) {
-            this.logger.log('Received serverContent parts (excluding audio)');
+            this.logger.info('Received serverContent parts (excluding audio)');
         }
 
         for (const part of parts) {
@@ -1084,11 +1107,11 @@ class GeminiConnectionManager {
 
             // Check for Text part
             if (part.text) {
-                this.logger.log('Gemini partial text:', part.text);
+                this.logger.info('Gemini partial text:', part.text);
 
                 if (this.ttsManager.isExternalTTSEnabled()) {
                     this.ttsState.ttsTextBuffer += part.text;
-                    this.logger.log(
+                    this.logger.info(
                         `${TTS_PROVIDER} TTS: Accumulated text (${this.ttsState.ttsTextBuffer.length} chars total)`,
                     );
                 }
@@ -1106,7 +1129,7 @@ class GeminiConnectionManager {
         if (!this.ttsState.responseCreatedSent && this.deviceWs.readyState === WSWebSocket.OPEN) {
             this.ttsState.responseCreatedSent = true;
             this.deviceWs.send(JSON.stringify({ type: 'server', msg: 'RESPONSE.CREATED' }));
-            this.logger.log('Device => Sent RESPONSE.CREATED');
+            this.logger.info('Device => Sent RESPONSE.CREATED');
         }
 
         try {
@@ -1132,10 +1155,10 @@ class GeminiConnectionManager {
     }
 
     private async handleGenerationComplete() {
-        this.logger.log('Generation Complete.');
+        this.logger.info('Generation Complete.');
 
         if (this.ttsState.toolCallInProgress && !this.ttsState.responseCreatedSent) {
-            this.logger.log('Releasing tool call lock - generation complete without audio');
+            this.logger.info('Releasing tool call lock - generation complete without audio');
             this.ttsState.toolCallInProgress = false;
         }
 
@@ -1144,7 +1167,7 @@ class GeminiConnectionManager {
 
         // If external TTS is enabled and we have accumulated text, set up delayed processing
         if (this.ttsManager.isExternalTTSEnabled() && this.ttsState.ttsTextBuffer.trim()) {
-            this.logger.log(
+            this.logger.info(
                 `${TTS_PROVIDER} TTS: Scheduling delayed processing for accumulated text (${this.ttsState.ttsTextBuffer.length} chars)`,
             );
 
@@ -1160,7 +1183,7 @@ class GeminiConnectionManager {
                 );
             }, TTS_DELAY_MS) as unknown as number;
 
-            this.logger.log(
+            this.logger.info(
                 `${TTS_PROVIDER} TTS: Will process in ${TTS_DELAY_MS}ms if no more text arrives`,
             );
         }
@@ -1169,14 +1192,14 @@ class GeminiConnectionManager {
         if (this.ttsState.responseCreatedSent) {
             await this.sendResponseComplete();
         } else {
-            this.logger.log(
+            this.logger.info(
                 'Generation complete, but no audio was sent (likely function call only or text response). Not sending RESPONSE.COMPLETE.',
             );
         }
     }
 
     private async sendResponseComplete() {
-        this.logger.log('Device => Sending RESPONSE.COMPLETE');
+        this.logger.info('Device => Sending RESPONSE.COMPLETE');
         ttsState.reset();
         this.ttsState.responseCreatedSent = false;
         this.ttsState.toolCallInProgress = false;
@@ -1203,7 +1226,7 @@ class GeminiConnectionManager {
     private async handleTranscriptions(msg: any) {
         if (msg.inputTranscription?.text) {
             if (msg.inputTranscription.finished && msg.inputTranscription.text.trim()) {
-                this.logger.log('User final transcription:', msg.inputTranscription.text);
+                this.logger.info('User final transcription:', msg.inputTranscription.text);
                 await addConversation(
                     this.context.supabase,
                     'user',
@@ -1216,7 +1239,7 @@ class GeminiConnectionManager {
 
         if (msg.outputTranscription?.text) {
             if (msg.outputTranscription.finished && msg.outputTranscription.text.trim()) {
-                this.logger.log('Assistant final transcription:', msg.outputTranscription.text);
+                this.logger.info('Assistant final transcription:', msg.outputTranscription.text);
                 await addConversation(
                     this.context.supabase,
                     'assistant',
@@ -1241,13 +1264,13 @@ class GeminiConnectionManager {
     private handleGeminiClose(code: number, reason: Buffer) {
         this.connectionState.isGeminiConnected = false;
         const reasonString = reason.toString();
-        this.logger.log('Gemini WS closed:', code, reasonString);
+        this.logger.info('Gemini WS closed:', code, reasonString);
 
         // Clear keep-alive timer
         if (this.connectionState.keepAliveIntervalId) {
             clearInterval(this.connectionState.keepAliveIntervalId);
             this.connectionState.keepAliveIntervalId = null;
-            this.logger.log('Cleared keep-alive timer');
+            this.logger.info('Cleared keep-alive timer');
         }
 
         this.geminiWs = null;
@@ -1269,10 +1292,10 @@ class GeminiConnectionManager {
         const rotatedSuccessfully = apiKeyManager.rotateToNextKey();
 
         if (rotatedSuccessfully) {
-            this.logger.log('Quota exceeded. Rotating to next API key and retrying immediately...');
+            this.logger.info('Quota exceeded. Rotating to next API key and retrying immediately...');
             this.reconnect();
         } else {
-            this.logger.log('Device => Sending QUOTA.EXCEEDED - all API keys exhausted.');
+            this.logger.info('Device => Sending QUOTA.EXCEEDED - all API keys exhausted.');
             this.deviceWs.send(JSON.stringify({ type: 'server', msg: 'QUOTA.EXCEEDED' }));
 
             if (this.connectionState.retryCount < MAX_RETRIES) {
@@ -1307,12 +1330,12 @@ class GeminiConnectionManager {
             if (
                 !this.connectionState.deviceClosed && this.deviceWs.readyState === WSWebSocket.OPEN
             ) {
-                this.logger.log(
+                this.logger.info(
                     `Attempting Gemini reconnect with reset keys (Attempt ${this.connectionState.retryCount}/${MAX_RETRIES})...`,
                 );
                 this.reconnect();
             } else {
-                this.logger.log('Device closed before Gemini reconnect attempt could execute.');
+                this.logger.info('Device closed before Gemini reconnect attempt could execute.');
             }
         }, delay);
     }
@@ -1324,7 +1347,7 @@ class GeminiConnectionManager {
             );
         }
         if (!this.connectionState.deviceClosed && this.deviceWs.readyState === WSWebSocket.OPEN) {
-            this.logger.log(
+            this.logger.info(
                 'Closing device WS due to Gemini WS close (or max retries reached/other error).',
             );
             this.deviceWs.close(1011, 'Assistant disconnected or unrecoverable error');
@@ -1338,7 +1361,7 @@ class GeminiConnectionManager {
         if (this.connectionState.keepAliveIntervalId) {
             clearInterval(this.connectionState.keepAliveIntervalId);
             this.connectionState.keepAliveIntervalId = null;
-            this.logger.log('Cleared keep-alive timer due to error');
+            this.logger.info('Cleared keep-alive timer due to error');
         }
 
         if (this.geminiWs && this.geminiWs.readyState !== WSWebSocket.CLOSED) {
@@ -1375,7 +1398,7 @@ class GeminiConnectionManager {
             };
 
             this.geminiWs.send(JSON.stringify(gemMsg));
-            this.logger.log('Sent keep-alive audio chunk to Gemini');
+            //this.logger.info('Sent keep-alive audio chunk to Gemini');
         } catch (err) {
             this.logger.error('Failed to send keep-alive audio chunk:', err);
         }
@@ -1544,7 +1567,7 @@ ALWAYS SAID EXACTLY WORD BY WORD WHAT THE transferModal GIVE YOU.
         if (
             this.connectionState.isGeminiConnected && this.geminiWs?.readyState === WSWebSocket.OPEN
         ) {
-            this.logger.log('Signaling Turn Complete.');
+            this.logger.info('Signaling Turn Complete.');
             const finalizeTurn = {
                 clientContent: { turns: [], turnComplete: true },
             };
@@ -1565,13 +1588,13 @@ ALWAYS SAID EXACTLY WORD BY WORD WHAT THE transferModal GIVE YOU.
         if (this.ttsState.ttsTimeout) {
             clearTimeout(this.ttsState.ttsTimeout);
             this.ttsState.ttsTimeout = null;
-            this.logger.log('Cleared pending TTS timeout due to interrupt');
+            this.logger.info('Cleared pending TTS timeout due to interrupt');
         }
 
         if (
             this.connectionState.isGeminiConnected && this.geminiWs?.readyState === WSWebSocket.OPEN
         ) {
-            this.logger.log('Signaling Turn Complete (Interrupt).');
+            this.logger.info('Signaling Turn Complete (Interrupt).');
             const interruptTurn = {
                 clientContent: { turns: [], turnComplete: true },
             };
@@ -1696,11 +1719,11 @@ class DeviceMessageHandler {
         try {
             const rawString = raw.toString('utf-8');
             if (rawString.length > 1000) {
-                this.logger.log(
+                this.logger.info(
                     `Received large message (${rawString.length} chars), likely image data`,
                 );
             } else {
-                this.logger.log(
+                this.logger.info(
                     `Received message: ${rawString.substring(0, 200)}${
                         rawString.length > 200 ? '...' : ''
                     }`,
@@ -1720,7 +1743,7 @@ class DeviceMessageHandler {
                     this.connectionState.isGeminiConnected,
                 );
             } else if (msgObj.type === 'image_complete') {
-                this.logger.log(
+                this.logger.info(
                     `Received image_complete message for ${msgObj.total_chunks} chunks`,
                 );
             } else if (msgObj.type === 'image') {
@@ -1739,7 +1762,7 @@ class DeviceMessageHandler {
     }
 
     private async handleLegacyImage(msgObj: any) {
-        this.logger.log(
+        this.logger.info(
             `Processing legacy single image message. waitingForImage: ${this.imageState.waitingForImage}, pendingVisionCall: ${!!this
                 .imageState.pendingVisionCall}`,
         );
@@ -1749,7 +1772,7 @@ class DeviceMessageHandler {
             return;
         }
 
-        this.logger.log(
+        this.logger.info(
             `Received legacy image data for GetVision ID: ${this.imageState.pendingVisionCall.id}`,
         );
         const base64Jpeg = msgObj.data as string;
@@ -1769,11 +1792,11 @@ class DeviceMessageHandler {
     }
 
     private handleEndOfSpeech() {
-        this.logger.log('End of Speech detected.');
+        this.logger.info('End of Speech detected.');
 
         // Flush remaining audio
         if (this.audioState.micAccum.length > 0) {
-            this.logger.log(
+            this.logger.info(
                 `Flushing remaining ${this.audioState.micAccum.length} bytes of audio.`,
             );
 
@@ -1800,7 +1823,7 @@ class DeviceMessageHandler {
     }
 
     private handleInterrupt() {
-        this.logger.log('INTERRUPT received.');
+        this.logger.info('INTERRUPT received.');
         this.geminiManager.interruptCurrentTurn();
     }
 }
@@ -1811,7 +1834,7 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
     wss.on('connection', async (deviceWs: WSWebSocket, context: ConnectionContext) => {
         const { user, supabase, timestamp } = context;
         const logger = new Logger('[Main]');
-        logger.log(`Device WebSocket connected for user: ${user.user_id}`);
+        logger.info(`Device WebSocket connected for user: ${user.user_id}`);
 
         // Initialize connection state
         const connectionState: ConnectionState = {
@@ -1858,7 +1881,7 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
         audioDebugManager.startSession(connectionState.sessionId);
 
         // Create Flash 2.5 session
-        logger.log(`Creating Flash 2.5 session: ${connectionState.sessionId}`);
+        logger.info(`Creating Flash 2.5 session: ${truncateSessionId(connectionState.sessionId)}`);
 
         // Create Gemini connection manager
         const geminiManager = new GeminiConnectionManager(
@@ -1897,7 +1920,7 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
                 currentVolume = deviceInfo.volume ?? 100;
                 isOta = deviceInfo.is_ota || false;
                 isReset = deviceInfo.is_reset || false;
-                logger.log(
+                logger.info(
                     `Fetched initial device info: Volume=${currentVolume}, OTA=${isOta}, Reset=${isReset}`,
                 );
             } else {
@@ -1957,10 +1980,10 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
             if (!connectionState.deviceClosed) {
                 connectionState.deviceClosed = true;
                 connectionState.pipelineActive = false;
-                logger.log('Closing Gemini WS due to device error.');
+                logger.info('Closing Gemini WS due to device error.');
 
                 if (connectionState.retryTimeoutId) {
-                    logger.log('Device error, cancelling pending Gemini reconnect.');
+                    logger.info('Device error, cancelling pending Gemini reconnect.');
                     clearTimeout(connectionState.retryTimeoutId);
                     connectionState.retryTimeoutId = null;
                 }
@@ -1976,7 +1999,7 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
 
         deviceWs.on('close', async (code, reason) => {
             if (connectionState.deviceClosed) return;
-            logger.log(`Device WS closed => Code: ${code}, Reason: ${reason.toString()}`);
+            logger.info(`Device WS closed => Code: ${code}, Reason: ${reason.toString()}`);
             connectionState.deviceClosed = true;
             connectionState.pipelineActive = false;
 
@@ -1989,7 +2012,7 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
 
             // If waiting for a retry, cancel it
             if (connectionState.retryTimeoutId) {
-                logger.log('Device closed, cancelling pending Gemini reconnect.');
+                logger.info('Device closed, cancelling pending Gemini reconnect.');
                 clearTimeout(connectionState.retryTimeoutId);
                 connectionState.retryTimeoutId = null;
             }
@@ -1999,7 +2022,7 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
                 const durationSeconds = Math.floor(
                     (Date.now() - connectionState.sessionStartTime) / 1000,
                 );
-                logger.log(`Session duration: ${durationSeconds} seconds.`);
+                logger.info(`Session duration: ${durationSeconds} seconds.`);
                 await updateUserSessionTime(supabase, user, durationSeconds)
                     .catch((err) => logger.error('DB Error (Session Time):', err));
             }
@@ -2011,7 +2034,7 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
             await audioDebugManager.endSession(connectionState.sessionId, 'connection_closed');
 
             // Destroy Flash 2.5 session
-            logger.log(`Destroying Flash 2.5 session: ${connectionState.sessionId}`);
+            logger.info(`Destroying Flash 2.5 session: ${truncateSessionId(connectionState.sessionId)}`);
             destroyFlash25Session(connectionState.sessionId);
         });
     });
