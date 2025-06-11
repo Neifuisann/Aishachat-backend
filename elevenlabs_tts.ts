@@ -1,12 +1,15 @@
 /**
  * ElevenLabs Text-to-Speech Integration
- * 
+ *
  * This module provides integration with ElevenLabs TTS API as an alternative
  * to Gemini's built-in audio responses. When enabled, text responses from
  * Gemini are sent to ElevenLabs for high-quality speech synthesis.
  */
 
-import { ELEVENLABS_API_KEY, TTS_SAMPLE_RATE } from "./config.ts";
+import { ELEVENLABS_API_KEY, TTS_SAMPLE_RATE } from './config.ts';
+import { Logger } from './logger.ts';
+
+const logger = new Logger('[11Labs]');
 
 export interface ElevenLabsVoiceSettings {
     stability: number;
@@ -36,7 +39,7 @@ const DEFAULT_VOICE_SETTINGS: ElevenLabsVoiceSettings = {
     stability: 0.5,
     similarity_boost: 0.75,
     style: 0.0,
-    use_speaker_boost: true
+    use_speaker_boost: true,
 };
 
 /**
@@ -48,20 +51,20 @@ const DEFAULT_VOICE_SETTINGS: ElevenLabsVoiceSettings = {
  */
 export async function convertTextToSpeech(
     text: string,
-    voiceId: string = "21m00Tcm4TlvDq8ikWAM", // Rachel voice
-    options: Partial<ElevenLabsTTSRequest> = {}
+    voiceId: string = '21m00Tcm4TlvDq8ikWAM', // Rachel voice
+    options: Partial<ElevenLabsTTSRequest> = {},
 ): Promise<ElevenLabsTTSResponse> {
     if (!ELEVENLABS_API_KEY) {
         return {
             success: false,
-            error: "ElevenLabs API key not configured"
+            error: 'ElevenLabs API key not configured',
         };
     }
 
     if (!text.trim()) {
         return {
             success: false,
-            error: "Empty text provided"
+            error: 'Empty text provided',
         };
     }
 
@@ -71,49 +74,54 @@ export async function convertTextToSpeech(
         // pcm_16000, pcm_22050, pcm_24000, pcm_44100, ulaw_8000
 
         // Try PCM format first (requires Pro tier), fallback to MP3 if needed
-        let outputFormat = "pcm_24000"; // Default to 24kHz PCM to match TTS_SAMPLE_RATE
+        let outputFormat = 'pcm_24000'; // Default to 24kHz PCM to match TTS_SAMPLE_RATE
 
         // Use type assertion to handle the constant comparison
         const sampleRate = TTS_SAMPLE_RATE as number;
         if (sampleRate === 16000) {
-            outputFormat = "pcm_16000";
+            outputFormat = 'pcm_16000';
         } else if (sampleRate === 22050) {
-            outputFormat = "pcm_22050";
+            outputFormat = 'pcm_22050';
         } else if (sampleRate === 44100) {
-            outputFormat = "pcm_44100";
+            outputFormat = 'pcm_44100';
         }
 
-        const modelId = options.model_id || "eleven_flash_v2_5";
+        const modelId = options.model_id || 'eleven_flash_v2_5';
         const requestBody: ElevenLabsTTSRequest = {
             text: text,
             model_id: modelId,
-            voice_settings: options.voice_settings || DEFAULT_VOICE_SETTINGS
+            voice_settings: options.voice_settings || DEFAULT_VOICE_SETTINGS,
         };
 
         // Only add language_code for models that support it
         // Flash v2.5 and Turbo v2.5 support language_code parameter
-        if (modelId === "eleven_flash_v2_5" || modelId === "eleven_turbo_v2_5") {
-            requestBody.language_code = options.language_code || "vi"; // Vietnamese
+        if (modelId === 'eleven_flash_v2_5' || modelId === 'eleven_turbo_v2_5') {
+            requestBody.language_code = options.language_code || 'vi'; // Vietnamese
         }
 
-        console.log(`ElevenLabs TTS: Converting text (${text.length} chars) using voice ${voiceId}, format: ${outputFormat}`);
+        logger.info(
+            `ElevenLabs TTS: Converting text (${text.length} chars) using voice ${voiceId}, format: ${outputFormat}`,
+        );
 
-        const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}?output_format=${outputFormat}`, {
-            method: "POST",
-            headers: {
-                "Accept": "audio/*",
-                "Content-Type": "application/json",
-                "xi-api-key": ELEVENLABS_API_KEY
+        const response = await fetch(
+            `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}?output_format=${outputFormat}`,
+            {
+                method: 'POST',
+                headers: {
+                    'Accept': 'audio/*',
+                    'Content-Type': 'application/json',
+                    'xi-api-key': ELEVENLABS_API_KEY,
+                },
+                body: JSON.stringify(requestBody),
             },
-            body: JSON.stringify(requestBody)
-        });
+        );
 
         if (!response.ok) {
             const errorText = await response.text();
-            console.error(`ElevenLabs TTS API error: ${response.status} - ${errorText}`);
+            logger.error(`ElevenLabs TTS API error: ${response.status} - ${errorText}`);
             return {
                 success: false,
-                error: `ElevenLabs API error: ${response.status} - ${errorText}`
+                error: `ElevenLabs API error: ${response.status} - ${errorText}`,
             };
         }
 
@@ -121,7 +129,7 @@ export async function convertTextToSpeech(
         if (!response.body) {
             return {
                 success: false,
-                error: "No response body received from ElevenLabs"
+                error: 'No response body received from ElevenLabs',
             };
         }
 
@@ -150,46 +158,61 @@ export async function convertTextToSpeech(
             offset += chunk.length;
         }
 
-        console.log(`ElevenLabs TTS: Successfully generated ${audioData.length} bytes of audio from ${audioChunks.length} chunks`);
-        console.log(`ElevenLabs TTS: Audio format: ${outputFormat}, first 16 bytes: ${Array.from(audioData.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
+        logger.info(
+            `ElevenLabs TTS: Successfully generated ${audioData.length} bytes of audio from ${audioChunks.length} chunks`,
+        );
+        logger.debug(
+            `ElevenLabs TTS: Audio format: ${outputFormat}, first 16 bytes: ${
+                Array.from(audioData.slice(0, 16)).map((b) => b.toString(16).padStart(2, '0')).join(
+                    ' ',
+                )
+            }`,
+        );
 
         // Check if we received MP3 data instead of PCM (indicates subscription limitation)
-        if (audioData.length > 3 &&
-            audioData[0] === 0x49 && audioData[1] === 0x44 && audioData[2] === 0x33) {
-            console.error("ElevenLabs TTS: Received MP3 data with ID3 tags instead of PCM");
-            console.error("ElevenLabs TTS: This indicates your subscription doesn't support PCM format");
-            console.error("ElevenLabs TTS: PCM format requires Pro tier or above subscription");
+        if (
+            audioData.length > 3 &&
+            audioData[0] === 0x49 && audioData[1] === 0x44 && audioData[2] === 0x33
+        ) {
+            logger.error('ElevenLabs TTS: Received MP3 data with ID3 tags instead of PCM');
+            logger.error(
+                "ElevenLabs TTS: This indicates your subscription doesn't support PCM format",
+            );
+            logger.error('ElevenLabs TTS: PCM format requires Pro tier or above subscription');
             return {
                 success: false,
-                error: "Received MP3 format instead of PCM. PCM format requires Pro tier subscription or above. Please upgrade your ElevenLabs subscription or implement MP3 decoding."
+                error:
+                    'Received MP3 format instead of PCM. PCM format requires Pro tier subscription or above. Please upgrade your ElevenLabs subscription or implement MP3 decoding.',
             };
         }
 
         // Check for MP3 frame header (0xFF 0xFB or similar)
         if (audioData.length > 2 && audioData[0] === 0xFF && (audioData[1] & 0xE0) === 0xE0) {
-            console.error("ElevenLabs TTS: Received MP3 frame data instead of PCM");
+            logger.error('ElevenLabs TTS: Received MP3 frame data instead of PCM');
             return {
                 success: false,
-                error: "Received MP3 format instead of PCM. Please upgrade your ElevenLabs subscription to Pro tier or above for PCM support."
+                error:
+                    'Received MP3 format instead of PCM. Please upgrade your ElevenLabs subscription to Pro tier or above for PCM support.',
             };
         }
 
         // For PCM formats, we need to ensure the data is in the right format
         let processedAudio = audioData;
-        if (outputFormat.startsWith("pcm_")) {
+        if (outputFormat.startsWith('pcm_')) {
             processedAudio = new Uint8Array(convertAudioFormat(audioData, outputFormat));
         }
 
         return {
             success: true,
-            audio: processedAudio
+            audio: processedAudio,
         };
-
     } catch (error) {
-        console.error("ElevenLabs TTS error:", error);
+        logger.error('ElevenLabs TTS error:', error);
         return {
             success: false,
-            error: `Network or processing error: ${error instanceof Error ? error.message : String(error)}`
+            error: `Network or processing error: ${
+                error instanceof Error ? error.message : String(error)
+            }`,
         };
     }
 }
@@ -200,14 +223,14 @@ export async function convertTextToSpeech(
  */
 export async function getAvailableVoices(): Promise<any> {
     if (!ELEVENLABS_API_KEY) {
-        throw new Error("ElevenLabs API key not configured");
+        throw new Error('ElevenLabs API key not configured');
     }
 
     try {
-        const response = await fetch("https://api.elevenlabs.io/v1/voices", {
+        const response = await fetch('https://api.elevenlabs.io/v1/voices', {
             headers: {
-                "xi-api-key": ELEVENLABS_API_KEY
-            }
+                'xi-api-key': ELEVENLABS_API_KEY,
+            },
         });
 
         if (!response.ok) {
@@ -216,7 +239,7 @@ export async function getAvailableVoices(): Promise<any> {
 
         return await response.json();
     } catch (error) {
-        console.error("Error fetching ElevenLabs voices:", error);
+        logger.error('Error fetching ElevenLabs voices:', error);
         throw error;
     }
 }
@@ -230,18 +253,20 @@ export async function getAvailableVoices(): Promise<any> {
  */
 export function convertAudioFormat(
     audioData: Uint8Array,
-    sourceFormat: string = "pcm_24000"
+    sourceFormat: string = 'pcm_24000',
 ): Uint8Array {
     // For PCM formats, we need to ensure the data is raw PCM without headers
-    if (sourceFormat.startsWith("pcm_")) {
+    if (sourceFormat.startsWith('pcm_')) {
         let pcmData = audioData;
 
         // ElevenLabs might return PCM with WAV headers, we need to strip them
         // WAV header is typically 44 bytes, starts with "RIFF"
-        if (audioData.length > 44 &&
+        if (
+            audioData.length > 44 &&
             audioData[0] === 0x52 && audioData[1] === 0x49 &&
-            audioData[2] === 0x46 && audioData[3] === 0x46) {
-            console.log("ElevenLabs TTS: Detected WAV header, stripping it");
+            audioData[2] === 0x46 && audioData[3] === 0x46
+        ) {
+            logger.debug('ElevenLabs TTS: Detected WAV header, stripping it');
 
             // Parse WAV header to get actual audio parameters
             const view = new DataView(audioData.buffer);
@@ -249,33 +274,37 @@ export function convertAudioFormat(
             const bitsPerSample = view.getUint16(34, true);
             const channels = view.getUint16(22, true);
 
-            console.log(`ElevenLabs TTS: WAV format - ${sampleRate}Hz, ${bitsPerSample}-bit, ${channels} channel(s)`);
+            logger.debug(
+                `ElevenLabs TTS: WAV format - ${sampleRate}Hz, ${bitsPerSample}-bit, ${channels} channel(s)`,
+            );
 
             // Find the data chunk (should start with "data")
             let dataOffset = 44; // Standard WAV header size
             for (let i = 36; i < audioData.length - 4; i++) {
-                if (audioData[i] === 0x64 && audioData[i+1] === 0x61 &&
-                    audioData[i+2] === 0x74 && audioData[i+3] === 0x61) {
+                if (
+                    audioData[i] === 0x64 && audioData[i + 1] === 0x61 &&
+                    audioData[i + 2] === 0x74 && audioData[i + 3] === 0x61
+                ) {
                     dataOffset = i + 8; // Skip "data" + 4-byte size
                     break;
                 }
             }
 
-            console.log(`ElevenLabs TTS: Data starts at offset ${dataOffset}`);
+            logger.debug(`ElevenLabs TTS: Data starts at offset ${dataOffset}`);
             pcmData = audioData.slice(dataOffset);
         } else {
-            console.log("ElevenLabs TTS: No WAV header detected, using raw data");
+            logger.debug('ElevenLabs TTS: No WAV header detected, using raw data');
         }
 
         // Ensure we have the right format for the audio pipeline
         // The pipeline expects 16-bit little-endian PCM
-        console.log(`ElevenLabs TTS: Final PCM data size: ${pcmData.length} bytes`);
+        logger.debug(`ElevenLabs TTS: Final PCM data size: ${pcmData.length} bytes`);
         return pcmData;
     }
 
     // For MP3 or other formats, we would need additional processing
     // For now, return as-is and let the existing audio pipeline handle it
-    console.warn(`Audio format conversion not implemented for: ${sourceFormat}`);
+    logger.warn(`Audio format conversion not implemented for: ${sourceFormat}`);
     return audioData;
 }
 
@@ -289,67 +318,72 @@ export function convertAudioFormat(
  */
 export async function convertTextToSpeechStreaming(
     text: string,
-    voiceId: string = "21m00Tcm4TlvDq8ikWAM", // Rachel voice
+    voiceId: string = '21m00Tcm4TlvDq8ikWAM', // Rachel voice
     onAudioChunk: (chunk: Uint8Array) => Promise<void>,
-    options: Partial<ElevenLabsTTSRequest> = {}
+    options: Partial<ElevenLabsTTSRequest> = {},
 ): Promise<ElevenLabsTTSResponse> {
     if (!ELEVENLABS_API_KEY) {
         return {
             success: false,
-            error: "ElevenLabs API key not configured"
+            error: 'ElevenLabs API key not configured',
         };
     }
 
     if (!text.trim()) {
         return {
             success: false,
-            error: "Empty text provided"
+            error: 'Empty text provided',
         };
     }
 
     try {
         // Determine output format based on TTS_SAMPLE_RATE
-        let outputFormat = "pcm_24000"; // Default to 24kHz PCM to match TTS_SAMPLE_RATE
+        let outputFormat = 'pcm_24000'; // Default to 24kHz PCM to match TTS_SAMPLE_RATE
 
         const sampleRate = TTS_SAMPLE_RATE as number;
         if (sampleRate === 16000) {
-            outputFormat = "pcm_16000";
+            outputFormat = 'pcm_16000';
         } else if (sampleRate === 22050) {
-            outputFormat = "pcm_22050";
+            outputFormat = 'pcm_22050';
         } else if (sampleRate === 44100) {
-            outputFormat = "pcm_44100";
+            outputFormat = 'pcm_44100';
         }
 
-        const modelId = options.model_id || "eleven_flash_v2_5";
+        const modelId = options.model_id || 'eleven_flash_v2_5';
         const requestBody: ElevenLabsTTSRequest = {
             text: text,
             model_id: modelId,
-            voice_settings: options.voice_settings || DEFAULT_VOICE_SETTINGS
+            voice_settings: options.voice_settings || DEFAULT_VOICE_SETTINGS,
         };
 
         // Only add language_code for models that support it
-        if (modelId === "eleven_flash_v2_5" || modelId === "eleven_turbo_v2_5") {
-            requestBody.language_code = options.language_code || "vi"; // Vietnamese
+        if (modelId === 'eleven_flash_v2_5' || modelId === 'eleven_turbo_v2_5') {
+            requestBody.language_code = options.language_code || 'vi'; // Vietnamese
         }
 
-        console.log(`ElevenLabs TTS Streaming: Converting text (${text.length} chars) using voice ${voiceId}, format: ${outputFormat}`);
+        logger.info(
+            `ElevenLabs TTS Streaming: Converting text (${text.length} chars) using voice ${voiceId}, format: ${outputFormat}`,
+        );
 
-        const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=${outputFormat}`, {
-            method: "POST",
-            headers: {
-                "Accept": "audio/*",
-                "Content-Type": "application/json",
-                "xi-api-key": ELEVENLABS_API_KEY
+        const response = await fetch(
+            `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=${outputFormat}`,
+            {
+                method: 'POST',
+                headers: {
+                    'Accept': 'audio/*',
+                    'Content-Type': 'application/json',
+                    'xi-api-key': ELEVENLABS_API_KEY,
+                },
+                body: JSON.stringify(requestBody),
             },
-            body: JSON.stringify(requestBody)
-        });
+        );
 
         if (!response.ok) {
             const errorText = await response.text();
-            console.error(`ElevenLabs TTS API error: ${response.status} - ${errorText}`);
+            logger.error(`ElevenLabs TTS API error: ${response.status} - ${errorText}`);
             return {
                 success: false,
-                error: `ElevenLabs API error: ${response.status} - ${errorText}`
+                error: `ElevenLabs API error: ${response.status} - ${errorText}`,
             };
         }
 
@@ -357,7 +391,7 @@ export async function convertTextToSpeechStreaming(
         if (!response.body) {
             return {
                 success: false,
-                error: "No response body received from ElevenLabs"
+                error: 'No response body received from ElevenLabs',
             };
         }
 
@@ -386,18 +420,21 @@ export async function convertTextToSpeechStreaming(
             reader.releaseLock();
         }
 
-        console.log(`ElevenLabs TTS Streaming: Successfully processed ${chunkCount} chunks, ${totalBytes} total bytes`);
+        logger.info(
+            `ElevenLabs TTS Streaming: Successfully processed ${chunkCount} chunks, ${totalBytes} total bytes`,
+        );
 
         return {
             success: true,
-            audio: new Uint8Array(0) // No need to return audio data since it's streamed
+            audio: new Uint8Array(0), // No need to return audio data since it's streamed
         };
-
     } catch (error) {
-        console.error("ElevenLabs TTS streaming error:", error);
+        logger.error('ElevenLabs TTS streaming error:', error);
         return {
             success: false,
-            error: `Network or processing error: ${error instanceof Error ? error.message : String(error)}`
+            error: `Network or processing error: ${
+                error instanceof Error ? error.message : String(error)
+            }`,
         };
     }
 }
@@ -407,8 +444,8 @@ export async function convertTextToSpeechStreaming(
  * @returns boolean indicating if ElevenLabs is properly configured
  */
 export function validateElevenLabsConfig(): boolean {
-    if (!ELEVENLABS_API_KEY || ELEVENLABS_API_KEY === "your_elevenlabs_api_key_here") {
-        console.error("ElevenLabs API key not properly configured");
+    if (!ELEVENLABS_API_KEY || ELEVENLABS_API_KEY === 'your_elevenlabs_api_key_here') {
+        logger.error('ElevenLabs API key not properly configured');
         return false;
     }
     return true;

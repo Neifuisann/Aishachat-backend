@@ -1,13 +1,16 @@
-import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
-import "./types.d.ts";
-import { 
-    getCurrentTimeUTC7, 
-    isValidTimeFormat, 
-    isValidDateFormat, 
-    parseTimeInput,
+import type { SupabaseClient } from 'jsr:@supabase/supabase-js@2';
+import './types.d.ts';
+import { Logger } from './logger.ts';
+
+const logger = new Logger('[Schedule]');
+import {
+    getCurrentTimeUTC7,
     getTodayUTC7,
-    shouldScheduleTriggerToday 
-} from "./time_utils.ts";
+    isValidDateFormat,
+    isValidTimeFormat,
+    parseTimeInput,
+    shouldScheduleTriggerToday,
+} from './time_utils.ts';
 
 /**
  * Lists all schedules for a user along with current UTC+7 time
@@ -17,9 +20,9 @@ import {
  */
 export async function ListSchedules(
     supabase: SupabaseClient,
-    userId: string
+    userId: string,
 ): Promise<{ success: boolean; data?: IScheduleWithCurrentTime; message: string }> {
-    console.log(`Attempting to list schedules for user ${userId}`);
+    logger.info(`Attempting to list schedules for user ${userId}`);
 
     try {
         const { data, error } = await supabase
@@ -30,7 +33,7 @@ export async function ListSchedules(
             .order('scheduled_time', { ascending: true });
 
         if (error) {
-            console.error(`Supabase error listing schedules for user ${userId}:`, error);
+            logger.error(`Supabase error listing schedules for user ${userId}:`, error);
             return { success: false, message: `Database error: ${error.message}` };
         }
 
@@ -40,14 +43,15 @@ export async function ListSchedules(
         const result: IScheduleWithCurrentTime = {
             schedules,
             current_time_utc7: timeInfo.current_time_utc7,
-            current_date_utc7: timeInfo.current_date_utc7
+            current_date_utc7: timeInfo.current_date_utc7,
         };
 
         // Create detailed message with all schedule information
-        let successMsg = `Retrieved ${schedules.length} active schedule(s) for user ${userId}. Current time (UTC+7): ${timeInfo.current_time_utc7}`;
+        let successMsg =
+            `Retrieved ${schedules.length} active schedule(s) for user ${userId}. Current time (UTC+7): ${timeInfo.current_time_utc7}`;
 
         if (schedules.length > 0) {
-            successMsg += "\n\nSchedule Details:";
+            successMsg += '\n\nSchedule Details:';
             schedules.forEach((schedule, index) => {
                 successMsg += `\n${index + 1}. "${schedule.title}"`;
                 successMsg += ` - Time: ${schedule.scheduled_time}`;
@@ -68,14 +72,13 @@ export async function ListSchedules(
                 successMsg += ` - Created: ${new Date(schedule.created_at).toLocaleDateString()}`;
             });
         } else {
-            successMsg += "\n\nNo active schedules found.";
+            successMsg += '\n\nNo active schedules found.';
         }
 
-        console.log(successMsg);
+        logger.info(successMsg);
         return { success: true, data: result, message: successMsg };
-
     } catch (err) {
-        console.error(`Unexpected error in ListSchedules for user ${userId}:`, err);
+        logger.error(`Unexpected error in ListSchedules for user ${userId}:`, err);
         const errorMessage = err instanceof Error ? err.message : String(err);
         return { success: false, message: `An unexpected error occurred: ${errorMessage}` };
     }
@@ -101,28 +104,29 @@ export async function AddSchedule(
     scheduleType: 'once' | 'daily' | 'weekly' | 'custom' = 'once',
     description?: string | null,
     schedulePattern?: ISchedulePattern | null,
-    targetDate?: string | null
+    targetDate?: string | null,
 ): Promise<{ success: boolean; schedule?: ISchedule; message: string }> {
-    console.log(`Attempting to add schedule for user ${userId}: "${title}" at ${scheduledTime}`);
+    logger.info(`Attempting to add schedule for user ${userId}: "${title}" at ${scheduledTime}`);
 
     if (!title || title.trim().length === 0) {
-        const errorMsg = "Schedule title cannot be empty";
-        console.error(errorMsg);
+        const errorMsg = 'Schedule title cannot be empty';
+        logger.error(errorMsg);
         return { success: false, message: errorMsg };
     }
 
     // Parse and validate time
     const parsedTime = parseTimeInput(scheduledTime);
     if (!parsedTime) {
-        const errorMsg = `Invalid time format: "${scheduledTime}". Please use formats like "6am", "18:30", or "HH:MM"`;
-        console.error(errorMsg);
+        const errorMsg =
+            `Invalid time format: "${scheduledTime}". Please use formats like "6am", "18:30", or "HH:MM"`;
+        logger.error(errorMsg);
         return { success: false, message: errorMsg };
     }
 
     // Validate target date if provided
     if (targetDate && !isValidDateFormat(targetDate)) {
         const errorMsg = `Invalid date format: "${targetDate}". Please use YYYY-MM-DD format`;
-        console.error(errorMsg);
+        logger.error(errorMsg);
         return { success: false, message: errorMsg };
     }
 
@@ -141,7 +145,7 @@ export async function AddSchedule(
             schedule_pattern: schedulePattern || null,
             target_date: targetDate,
             is_active: true,
-            archive: false
+            archive: false,
         };
 
         const { data, error } = await supabase
@@ -151,16 +155,16 @@ export async function AddSchedule(
             .single();
 
         if (error) {
-            console.error(`Supabase error adding schedule for user ${userId}:`, error);
+            logger.error(`Supabase error adding schedule for user ${userId}:`, error);
             return { success: false, message: `Database error: ${error.message}` };
         }
 
-        const successMsg = `Successfully added schedule "${title}" at ${parsedTime} for user ${userId}`;
-        console.log(successMsg);
+        const successMsg =
+            `Successfully added schedule "${title}" at ${parsedTime} for user ${userId}`;
+        logger.info(successMsg);
         return { success: true, schedule: data as ISchedule, message: successMsg };
-
     } catch (err) {
-        console.error(`Unexpected error in AddSchedule for user ${userId}:`, err);
+        logger.error(`Unexpected error in AddSchedule for user ${userId}:`, err);
         const errorMessage = err instanceof Error ? err.message : String(err);
         return { success: false, message: `An unexpected error occurred: ${errorMessage}` };
     }
@@ -190,25 +194,25 @@ export async function UpdateSchedule(
     description?: string | null,
     schedulePattern?: ISchedulePattern | null,
     targetDate?: string | null,
-    isActive?: boolean | null
+    isActive?: boolean | null,
 ): Promise<{ success: boolean; schedule?: ISchedule; message: string }> {
-    console.log(`Attempting to update schedule ${scheduleId} for user ${userId}`);
+    logger.info(`Attempting to update schedule ${scheduleId} for user ${userId}`);
 
     if (!scheduleId || scheduleId.trim().length === 0) {
-        const errorMsg = "Schedule ID is required for updating";
-        console.error(errorMsg);
+        const errorMsg = 'Schedule ID is required for updating';
+        logger.error(errorMsg);
         return { success: false, message: errorMsg };
     }
 
     try {
         // Build update object
         const updateData: any = {
-            updated_at: new Date().toISOString()
+            updated_at: new Date().toISOString(),
         };
 
         if (title !== undefined && title !== null) {
             if (title.trim().length === 0) {
-                return { success: false, message: "Schedule title cannot be empty" };
+                return { success: false, message: 'Schedule title cannot be empty' };
             }
             updateData.title = title.trim();
         }
@@ -253,22 +257,24 @@ export async function UpdateSchedule(
             .single();
 
         if (error) {
-            console.error(`Supabase error updating schedule ${scheduleId} for user ${userId}:`, error);
+            logger.error(
+                `Supabase error updating schedule ${scheduleId} for user ${userId}:`,
+                error,
+            );
             return { success: false, message: `Database error: ${error.message}` };
         }
 
         if (!data) {
             const errorMsg = `Schedule ${scheduleId} not found or not owned by user ${userId}`;
-            console.warn(errorMsg);
+            logger.warn(errorMsg);
             return { success: false, message: errorMsg };
         }
 
         const successMsg = `Successfully updated schedule "${data.title}" for user ${userId}`;
-        console.log(successMsg);
+        logger.info(successMsg);
         return { success: true, schedule: data as ISchedule, message: successMsg };
-
     } catch (err) {
-        console.error(`Unexpected error in UpdateSchedule for user ${userId}:`, err);
+        logger.error(`Unexpected error in UpdateSchedule for user ${userId}:`, err);
         const errorMessage = err instanceof Error ? err.message : String(err);
         return { success: false, message: `An unexpected error occurred: ${errorMessage}` };
     }
@@ -284,13 +290,13 @@ export async function UpdateSchedule(
 export async function CompleteSchedule(
     supabase: SupabaseClient,
     userId: string,
-    scheduleId: string
+    scheduleId: string,
 ): Promise<{ success: boolean; schedule?: ISchedule; message: string }> {
-    console.log(`Attempting to complete schedule ${scheduleId} for user ${userId}`);
+    logger.info(`Attempting to complete schedule ${scheduleId} for user ${userId}`);
 
     if (!scheduleId || scheduleId.trim().length === 0) {
-        const errorMsg = "Schedule ID is required for completion";
-        console.error(errorMsg);
+        const errorMsg = 'Schedule ID is required for completion';
+        logger.error(errorMsg);
         return { success: false, message: errorMsg };
     }
 
@@ -300,7 +306,7 @@ export async function CompleteSchedule(
             .update({
                 archive: true,
                 is_active: false,
-                updated_at: new Date().toISOString()
+                updated_at: new Date().toISOString(),
             })
             .eq('schedule_id', scheduleId)
             .eq('user_id', userId) // Ensure user can only complete their own schedules
@@ -308,22 +314,25 @@ export async function CompleteSchedule(
             .single();
 
         if (error) {
-            console.error(`Supabase error completing schedule ${scheduleId} for user ${userId}:`, error);
+            logger.error(
+                `Supabase error completing schedule ${scheduleId} for user ${userId}:`,
+                error,
+            );
             return { success: false, message: `Database error: ${error.message}` };
         }
 
         if (!data) {
             const errorMsg = `Schedule ${scheduleId} not found or not owned by user ${userId}`;
-            console.warn(errorMsg);
+            logger.warn(errorMsg);
             return { success: false, message: errorMsg };
         }
 
-        const successMsg = `Successfully completed and archived schedule "${data.title}" for user ${userId}`;
-        console.log(successMsg);
+        const successMsg =
+            `Successfully completed and archived schedule "${data.title}" for user ${userId}`;
+        logger.info(successMsg);
         return { success: true, schedule: data as ISchedule, message: successMsg };
-
     } catch (err) {
-        console.error(`Unexpected error in CompleteSchedule for user ${userId}:`, err);
+        logger.error(`Unexpected error in CompleteSchedule for user ${userId}:`, err);
         const errorMessage = err instanceof Error ? err.message : String(err);
         return { success: false, message: `An unexpected error occurred: ${errorMessage}` };
     }
@@ -339,13 +348,13 @@ export async function CompleteSchedule(
 export async function DeleteSchedule(
     supabase: SupabaseClient,
     userId: string,
-    scheduleId: string
+    scheduleId: string,
 ): Promise<{ success: boolean; message: string }> {
-    console.log(`Attempting to delete schedule ${scheduleId} for user ${userId}`);
+    logger.info(`Attempting to delete schedule ${scheduleId} for user ${userId}`);
 
     if (!scheduleId || scheduleId.trim().length === 0) {
-        const errorMsg = "Schedule ID is required for deletion";
-        console.error(errorMsg);
+        const errorMsg = 'Schedule ID is required for deletion';
+        logger.error(errorMsg);
         return { success: false, message: errorMsg };
     }
 
@@ -359,22 +368,24 @@ export async function DeleteSchedule(
             .single();
 
         if (error) {
-            console.error(`Supabase error deleting schedule ${scheduleId} for user ${userId}:`, error);
+            logger.error(
+                `Supabase error deleting schedule ${scheduleId} for user ${userId}:`,
+                error,
+            );
             return { success: false, message: `Database error: ${error.message}` };
         }
 
         if (!data) {
             const errorMsg = `Schedule ${scheduleId} not found or not owned by user ${userId}`;
-            console.warn(errorMsg);
+            logger.warn(errorMsg);
             return { success: false, message: errorMsg };
         }
 
         const successMsg = `Successfully deleted schedule "${data.title}" for user ${userId}`;
-        console.log(successMsg);
+        logger.info(successMsg);
         return { success: true, message: successMsg };
-
     } catch (err) {
-        console.error(`Unexpected error in DeleteSchedule for user ${userId}:`, err);
+        logger.error(`Unexpected error in DeleteSchedule for user ${userId}:`, err);
         const errorMessage = err instanceof Error ? err.message : String(err);
         return { success: false, message: `An unexpected error occurred: ${errorMessage}` };
     }
@@ -390,13 +401,13 @@ export async function DeleteSchedule(
 export async function SearchSchedules(
     supabase: SupabaseClient,
     userId: string,
-    query: string
+    query: string,
 ): Promise<{ success: boolean; schedules?: ISchedule[]; message: string }> {
-    console.log(`Attempting to search schedules for user ${userId} with query: "${query}"`);
+    logger.info(`Attempting to search schedules for user ${userId} with query: "${query}"`);
 
     if (!query || query.trim().length === 0) {
-        const errorMsg = "Search query cannot be empty";
-        console.error(errorMsg);
+        const errorMsg = 'Search query cannot be empty';
+        logger.error(errorMsg);
         return { success: false, message: errorMsg };
     }
 
@@ -410,17 +421,17 @@ export async function SearchSchedules(
             .order('scheduled_time', { ascending: true });
 
         if (error) {
-            console.error(`Supabase error searching schedules for user ${userId}:`, error);
+            logger.error(`Supabase error searching schedules for user ${userId}:`, error);
             return { success: false, message: `Database error: ${error.message}` };
         }
 
         const schedules = data as ISchedule[];
-        const successMsg = `Found ${schedules.length} schedule(s) matching "${query}" for user ${userId}`;
-        console.log(successMsg);
+        const successMsg =
+            `Found ${schedules.length} schedule(s) matching "${query}" for user ${userId}`;
+        logger.info(successMsg);
         return { success: true, schedules, message: successMsg };
-
     } catch (err) {
-        console.error(`Unexpected error in SearchSchedules for user ${userId}:`, err);
+        logger.error(`Unexpected error in SearchSchedules for user ${userId}:`, err);
         const errorMessage = err instanceof Error ? err.message : String(err);
         return { success: false, message: `An unexpected error occurred: ${errorMessage}` };
     }
@@ -440,9 +451,13 @@ export async function FindScheduleConflicts(
     userId: string,
     scheduledTime: string,
     targetDate?: string | null,
-    excludeScheduleId?: string | null
+    excludeScheduleId?: string | null,
 ): Promise<{ success: boolean; conflicts?: ISchedule[]; message: string }> {
-    console.log(`Checking for schedule conflicts for user ${userId} at ${scheduledTime} on ${targetDate || 'today'}`);
+    logger.info(
+        `Checking for schedule conflicts for user ${userId} at ${scheduledTime} on ${
+            targetDate || 'today'
+        }`,
+    );
 
     try {
         const checkDate = targetDate || getTodayUTC7();
@@ -461,14 +476,14 @@ export async function FindScheduleConflicts(
         const { data, error } = await query;
 
         if (error) {
-            console.error(`Supabase error checking conflicts for user ${userId}:`, error);
+            logger.error(`Supabase error checking conflicts for user ${userId}:`, error);
             return { success: false, message: `Database error: ${error.message}` };
         }
 
         const allSchedules = data as ISchedule[];
 
         // Filter schedules that would trigger on the target date
-        const conflicts = allSchedules.filter(schedule =>
+        const conflicts = allSchedules.filter((schedule) =>
             shouldScheduleTriggerToday(schedule, checkDate)
         );
 
@@ -476,11 +491,10 @@ export async function FindScheduleConflicts(
             ? `Found ${conflicts.length} conflicting schedule(s) at ${scheduledTime} on ${checkDate}`
             : `No conflicts found for ${scheduledTime} on ${checkDate}`;
 
-        console.log(successMsg);
+        logger.info(successMsg);
         return { success: true, conflicts, message: successMsg };
-
     } catch (err) {
-        console.error(`Unexpected error in FindScheduleConflicts for user ${userId}:`, err);
+        logger.error(`Unexpected error in FindScheduleConflicts for user ${userId}:`, err);
         const errorMessage = err instanceof Error ? err.message : String(err);
         return { success: false, message: `An unexpected error occurred: ${errorMessage}` };
     }

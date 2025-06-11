@@ -1,6 +1,17 @@
-import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
-import { ListSchedules, AddSchedule, UpdateSchedule, DeleteSchedule, SearchSchedules, FindScheduleConflicts, CompleteSchedule } from "./schedule_handler.ts";
-import "./types.d.ts";
+import type { SupabaseClient } from 'jsr:@supabase/supabase-js@2';
+import {
+    AddSchedule,
+    CompleteSchedule,
+    DeleteSchedule,
+    FindScheduleConflicts,
+    ListSchedules,
+    SearchSchedules,
+    UpdateSchedule,
+} from './schedule_handler.ts';
+import './types.d.ts';
+import { Logger } from './logger.ts';
+
+const logger = new Logger('[ScheduleMgr]');
 
 /**
  * Unified schedule management function that handles all schedule operations
@@ -22,7 +33,7 @@ import "./types.d.ts";
 export async function ScheduleManager(
     supabase: SupabaseClient,
     userId: string,
-    mode: "List" | "Add" | "Update" | "Delete" | "Search" | "CheckConflict" | "Complete",
+    mode: 'List' | 'Add' | 'Update' | 'Delete' | 'Search' | 'CheckConflict' | 'Complete',
     scheduleId?: string | null,
     title?: string | null,
     scheduledTime?: string | null,
@@ -30,134 +41,184 @@ export async function ScheduleManager(
     description?: string | null,
     schedulePattern?: ISchedulePattern | null,
     targetDate?: string | null,
-    query?: string | null
+    query?: string | null,
 ): Promise<{ success: boolean; data?: any; message: string }> {
-    console.log(`ScheduleManager called: mode=${mode}, userId=${userId}`);
+    logger.info(`ScheduleManager called: mode=${mode}, userId=${userId}`);
 
     // Validate mode
-    if (!["List", "Add", "Update", "Delete", "Search", "CheckConflict", "Complete"].includes(mode)) {
-        return { success: false, message: "Invalid mode. Must be 'List', 'Add', 'Update', 'Delete', 'Search', 'CheckConflict', or 'Complete'." };
+    if (
+        !['List', 'Add', 'Update', 'Delete', 'Search', 'CheckConflict', 'Complete'].includes(mode)
+    ) {
+        return {
+            success: false,
+            message:
+                "Invalid mode. Must be 'List', 'Add', 'Update', 'Delete', 'Search', 'CheckConflict', or 'Complete'.",
+        };
     }
 
     try {
         switch (mode) {
-            case "List":
+            case 'List':
                 // List all schedules with current time
                 const listResult = await ListSchedules(supabase, userId);
                 return {
                     success: listResult.success,
                     data: listResult.data,
-                    message: listResult.message
+                    message: listResult.message,
                 };
 
-            case "Add":
+            case 'Add':
                 // Add new schedule
                 if (!title || typeof title !== 'string' || !title.trim()) {
-                    return { success: false, message: "title is required for adding a new schedule." };
-                }
-                if (!scheduledTime || typeof scheduledTime !== 'string' || !scheduledTime.trim()) {
-                    return { success: false, message: "scheduledTime is required for adding a new schedule." };
-                }
-                
-                // Check for conflicts before adding
-                const conflictResult = await FindScheduleConflicts(
-                    supabase, userId, scheduledTime, targetDate
-                );
-                
-                if (conflictResult.success && conflictResult.conflicts && conflictResult.conflicts.length > 0) {
-                    const conflictTitles = conflictResult.conflicts.map(s => s.title).join(', ');
-                    return { 
-                        success: false, 
-                        data: conflictResult.conflicts,
-                        message: `Schedule conflict detected! You already have these schedules at ${scheduledTime}: ${conflictTitles}. Please choose a different time or update the existing schedule.` 
+                    return {
+                        success: false,
+                        message: 'title is required for adding a new schedule.',
                     };
                 }
-                
+                if (!scheduledTime || typeof scheduledTime !== 'string' || !scheduledTime.trim()) {
+                    return {
+                        success: false,
+                        message: 'scheduledTime is required for adding a new schedule.',
+                    };
+                }
+
+                // Check for conflicts before adding
+                const conflictResult = await FindScheduleConflicts(
+                    supabase,
+                    userId,
+                    scheduledTime,
+                    targetDate,
+                );
+
+                if (
+                    conflictResult.success && conflictResult.conflicts &&
+                    conflictResult.conflicts.length > 0
+                ) {
+                    const conflictTitles = conflictResult.conflicts.map((s) => s.title).join(', ');
+                    return {
+                        success: false,
+                        data: conflictResult.conflicts,
+                        message:
+                            `Schedule conflict detected! You already have these schedules at ${scheduledTime}: ${conflictTitles}. Please choose a different time or update the existing schedule.`,
+                    };
+                }
+
                 const addResult = await AddSchedule(
-                    supabase, userId, title, scheduledTime, 
-                    scheduleType || 'once', description, schedulePattern, targetDate
+                    supabase,
+                    userId,
+                    title,
+                    scheduledTime,
+                    scheduleType || 'once',
+                    description,
+                    schedulePattern,
+                    targetDate,
                 );
                 return {
                     success: addResult.success,
                     data: addResult.schedule,
-                    message: addResult.message
+                    message: addResult.message,
                 };
 
-            case "Update":
+            case 'Update':
                 // Update existing schedule
                 if (!scheduleId || typeof scheduleId !== 'string' || !scheduleId.trim()) {
-                    return { success: false, message: "scheduleId is required for updating a schedule." };
+                    return {
+                        success: false,
+                        message: 'scheduleId is required for updating a schedule.',
+                    };
                 }
-                
+
                 const updateResult = await UpdateSchedule(
-                    supabase, userId, scheduleId, title, scheduledTime, 
-                    scheduleType, description, schedulePattern, targetDate
+                    supabase,
+                    userId,
+                    scheduleId,
+                    title,
+                    scheduledTime,
+                    scheduleType,
+                    description,
+                    schedulePattern,
+                    targetDate,
                 );
                 return {
                     success: updateResult.success,
                     data: updateResult.schedule,
-                    message: updateResult.message
+                    message: updateResult.message,
                 };
 
-            case "Delete":
+            case 'Delete':
                 // Delete schedule
                 if (!scheduleId || typeof scheduleId !== 'string' || !scheduleId.trim()) {
-                    return { success: false, message: "scheduleId is required for deleting a schedule." };
+                    return {
+                        success: false,
+                        message: 'scheduleId is required for deleting a schedule.',
+                    };
                 }
-                
+
                 const deleteResult = await DeleteSchedule(supabase, userId, scheduleId);
                 return {
                     success: deleteResult.success,
-                    message: deleteResult.message
+                    message: deleteResult.message,
                 };
 
-            case "Search":
+            case 'Search':
                 // Search schedules
                 if (!query || typeof query !== 'string' || !query.trim()) {
-                    return { success: false, message: "query is required for searching schedules." };
+                    return {
+                        success: false,
+                        message: 'query is required for searching schedules.',
+                    };
                 }
-                
+
                 const searchResult = await SearchSchedules(supabase, userId, query);
                 return {
                     success: searchResult.success,
                     data: searchResult.schedules,
-                    message: searchResult.message
+                    message: searchResult.message,
                 };
 
-            case "CheckConflict":
+            case 'CheckConflict':
                 // Check for schedule conflicts
                 if (!scheduledTime || typeof scheduledTime !== 'string' || !scheduledTime.trim()) {
-                    return { success: false, message: "scheduledTime is required for checking conflicts." };
+                    return {
+                        success: false,
+                        message: 'scheduledTime is required for checking conflicts.',
+                    };
                 }
 
                 const checkResult = await FindScheduleConflicts(
-                    supabase, userId, scheduledTime, targetDate, scheduleId
+                    supabase,
+                    userId,
+                    scheduledTime,
+                    targetDate,
+                    scheduleId,
                 );
                 return {
                     success: checkResult.success,
                     data: checkResult.conflicts,
-                    message: checkResult.message
+                    message: checkResult.message,
                 };
 
-            case "Complete":
+            case 'Complete':
                 // Complete and archive schedule
                 if (!scheduleId || typeof scheduleId !== 'string' || !scheduleId.trim()) {
-                    return { success: false, message: "scheduleId is required for completing a schedule." };
+                    return {
+                        success: false,
+                        message: 'scheduleId is required for completing a schedule.',
+                    };
                 }
 
                 const completeResult = await CompleteSchedule(supabase, userId, scheduleId);
                 return {
                     success: completeResult.success,
                     data: completeResult.schedule,
-                    message: completeResult.message
+                    message: completeResult.message,
                 };
 
             default:
-                return { success: false, message: "Invalid mode/action combination." };
+                return { success: false, message: 'Invalid mode/action combination.' };
         }
-
     } catch (err) {
-        console.error(`Unexpected error in ScheduleManager for user ${userId}:`, err);
+        logger.error(`Unexpected error in ScheduleManager for user ${userId}:`, err);
         const errorMessage = err instanceof Error ? err.message : String(err);
         return { success: false, message: `An unexpected error occurred: ${errorMessage}` };
     }
