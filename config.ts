@@ -197,6 +197,32 @@ export function validateTTSProvider(provider: TTSProvider): boolean {
     }
 }
 
+// WebSocket Optimization Configuration
+export const WEBSOCKET_BINARY_PROTOCOL = true; // Use binary frames for reduced overhead
+export const TCP_NODELAY = true; // Disable Nagle's algorithm for lower latency
+
+// Connection Management Configuration
+export const CONNECTION_RETRY_CONFIG = {
+    maxRetries: 10,
+    initialDelayMs: 1000,
+    maxDelayMs: 30000,
+    backoffMultiplier: 2,
+    jitterRange: 1000,
+};
+
+// Circuit Breaker Configuration
+export const CIRCUIT_BREAKER_CONFIG = {
+    failureThreshold: 5, // Open circuit after 5 consecutive failures
+    recoveryTimeoutMs: 60000, // 60 seconds recovery timeout
+    monitoringWindowMs: 300000, // 5-minute monitoring window
+};
+
+// Keep-alive Configuration
+export const KEEP_ALIVE_CONFIG = {
+    intervalMs: 30000, // 30 seconds keep-alive interval
+    timeoutMs: 10000, // 10 seconds timeout for keep-alive response
+};
+
 // Server Configuration
 export const HOST = Deno.env.get('HOST') || '0.0.0.0';
 // Default to 8080 unless DEV_MODE is true, then default to 8000

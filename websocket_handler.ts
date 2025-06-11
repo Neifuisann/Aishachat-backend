@@ -8,9 +8,12 @@ import {
     ADPCM_BUFFER_SIZE,
     ADPCM_ENABLED,
     apiKeyManager,
+    CIRCUIT_BREAKER_CONFIG,
+    CONNECTION_RETRY_CONFIG,
     GEMINI_LIVE_URL_TEMPLATE,
     IMAGE_CHUNK_SIZE,
     IMAGE_CHUNK_TIMEOUT_MS,
+    KEEP_ALIVE_CONFIG,
     MIC_ACCUM_CHUNK_SIZE,
     MIC_INPUT_GAIN,
     MIC_SAMPLE_RATE,
@@ -18,6 +21,7 @@ import {
     TTS_SAMPLE_RATE,
     type TTSProvider,
     USE_FLASH_LIVE_AS_BASE,
+    WEBSOCKET_BINARY_PROTOCOL,
 } from './config.ts';
 
 import { AudioFilter, boostTtsVolumeInPlace, ttsState } from './audio.ts';
@@ -28,6 +32,8 @@ import { callGeminiVision } from './vision.ts';
 import { SetVolume } from './volume_handler.ts';
 import { isValidJpegBase64, rotateImage180 } from './image_utils.ts';
 import { Logger } from './logger.ts';
+import { RobustWebSocket } from './connection_manager.ts';
+import { APIKeyManager, GeminiKeyProvider } from './api_key_rotator.ts';
 
 // TTS imports
 import {
@@ -121,11 +127,14 @@ interface ImageCaptureState {
 
 // ===== Constants =====
 
-const MAX_RETRIES = 4;
-const RETRY_DELAYS = [15000, 30000, 60000, 180000]; // Delays in ms
+const MAX_RETRIES = 10; // Increased for robust connection handling
+const RETRY_DELAYS = [1000, 2000, 4000, 8000, 16000, 30000, 60000, 120000, 180000, 300000]; // Exponential backoff
 const KEEP_ALIVE_INTERVAL = 30000; // 30 seconds
 const IMAGE_CAPTURE_TIMEOUT = 15000; // 15 seconds
 const TTS_DELAY_MS = 100; // Wait 100ms after last generation complete before triggering TTS
+
+// Binary Protocol Constants
+const BINARY_FRAME_HEADER_SIZE = 8; // bytes for frame header
 
 // ===== Utility Functions =====
 
