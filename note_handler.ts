@@ -1,5 +1,8 @@
-import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
-import "./types.d.ts";
+import type { SupabaseClient } from 'jsr:@supabase/supabase-js@2';
+import './types.d.ts';
+import { Logger } from './logger.ts';
+
+const logger = new Logger('[Notes]');
 
 /**
  * Generates a smart title from the note body content
@@ -40,13 +43,13 @@ export async function AddNote(
     userId: string,
     title: string | null,
     body: string,
-    imageId?: string | null
+    imageId?: string | null,
 ): Promise<{ success: boolean; note?: INote; message: string }> {
-    console.log(`Attempting to add note for user ${userId}`);
+    logger.info(`Attempting to add note for user ${userId}`);
 
     if (!body || body.trim().length === 0) {
-        const errorMsg = "Note body cannot be empty";
-        console.error(errorMsg);
+        const errorMsg = 'Note body cannot be empty';
+        logger.error(errorMsg);
         return { success: false, message: errorMsg };
     }
 
@@ -58,7 +61,7 @@ export async function AddNote(
             user_id: userId,
             title: noteTitle,
             body: body.trim(),
-            image_id: imageId || null
+            image_id: imageId || null,
         };
 
         const { data, error } = await supabase
@@ -68,16 +71,15 @@ export async function AddNote(
             .single();
 
         if (error) {
-            console.error(`Supabase error adding note for user ${userId}:`, error);
+            logger.error(`Supabase error adding note for user ${userId}:`, error);
             return { success: false, message: `Database error: ${error.message}` };
         }
 
         const successMsg = `Successfully added note "${noteTitle}"`;
-        console.log(successMsg);
+        logger.info(successMsg);
         return { success: true, note: data as INote, message: successMsg };
-
     } catch (err) {
-        console.error(`Unexpected error in AddNote for user ${userId}:`, err);
+        logger.error(`Unexpected error in AddNote for user ${userId}:`, err);
         const errorMessage = err instanceof Error ? err.message : String(err);
         return { success: false, message: `An unexpected error occurred: ${errorMessage}` };
     }
@@ -97,13 +99,13 @@ export async function SearchNotes(
     userId: string,
     query: string,
     dateFrom?: string | null,
-    dateTo?: string | null
+    dateTo?: string | null,
 ): Promise<{ success: boolean; notes?: INote[]; message: string }> {
-    console.log(`Attempting to search notes for user ${userId} with query: "${query}"`);
+    logger.info(`Attempting to search notes for user ${userId} with query: "${query}"`);
 
     if (!query || query.trim().length === 0) {
-        const errorMsg = "Search query cannot be empty";
-        console.error(errorMsg);
+        const errorMsg = 'Search query cannot be empty';
+        logger.error(errorMsg);
         return { success: false, message: errorMsg };
     }
 
@@ -116,7 +118,7 @@ export async function SearchNotes(
         // Add text search using PostgreSQL full-text search
         const searchTerms = query.trim().split(/\s+/).join(' | ');
         queryBuilder = queryBuilder.or(
-            `title.ilike.%${query}%,body.ilike.%${query}%`
+            `title.ilike.%${query}%,body.ilike.%${query}%`,
         );
 
         // Add date filters if provided
@@ -133,17 +135,16 @@ export async function SearchNotes(
         const { data, error } = await queryBuilder;
 
         if (error) {
-            console.error(`Supabase error searching notes for user ${userId}:`, error);
+            logger.error(`Supabase error searching notes for user ${userId}:`, error);
             return { success: false, message: `Database error: ${error.message}` };
         }
 
         const notes = data as INote[];
         const successMsg = `Found ${notes.length} note(s) for user ${userId}`;
-        console.log(successMsg);
+        logger.info(successMsg);
         return { success: true, notes, message: successMsg };
-
     } catch (err) {
-        console.error(`Unexpected error in SearchNotes for user ${userId}:`, err);
+        logger.error(`Unexpected error in SearchNotes for user ${userId}:`, err);
         const errorMessage = err instanceof Error ? err.message : String(err);
         return { success: false, message: `An unexpected error occurred: ${errorMessage}` };
     }
@@ -163,20 +164,20 @@ export async function UpdateNote(
     userId: string,
     noteId: string,
     title?: string | null,
-    body?: string | null
+    body?: string | null,
 ): Promise<{ success: boolean; note?: INote; message: string }> {
-    console.log(`Attempting to update note ${noteId} for user ${userId}`);
+    logger.info(`Attempting to update note ${noteId} for user ${userId}`);
 
     if (!title && !body) {
-        const errorMsg = "At least title or body must be provided for update";
-        console.error(errorMsg);
+        const errorMsg = 'At least title or body must be provided for update';
+        logger.error(errorMsg);
         return { success: false, message: errorMsg };
     }
 
     try {
         // Build update object
         const updateData: any = {
-            updated_at: new Date().toISOString()
+            updated_at: new Date().toISOString(),
         };
 
         if (title !== undefined && title !== null) {
@@ -195,22 +196,21 @@ export async function UpdateNote(
             .single();
 
         if (error) {
-            console.error(`Supabase error updating note ${noteId} for user ${userId}:`, error);
+            logger.error(`Supabase error updating note ${noteId} for user ${userId}:`, error);
             return { success: false, message: `Database error: ${error.message}` };
         }
 
         if (!data) {
             const errorMsg = `Note ${noteId} not found or not owned by user ${userId}`;
-            console.warn(errorMsg);
+            logger.warn(errorMsg);
             return { success: false, message: errorMsg };
         }
 
         const successMsg = `Successfully updated note ${noteId} for user ${userId}`;
-        console.log(successMsg);
+        logger.info(successMsg);
         return { success: true, note: data as INote, message: successMsg };
-
     } catch (err) {
-        console.error(`Unexpected error in UpdateNote for user ${userId}:`, err);
+        logger.error(`Unexpected error in UpdateNote for user ${userId}:`, err);
         const errorMessage = err instanceof Error ? err.message : String(err);
         return { success: false, message: `An unexpected error occurred: ${errorMessage}` };
     }
@@ -226,9 +226,9 @@ export async function UpdateNote(
 export async function DeleteNote(
     supabase: SupabaseClient,
     userId: string,
-    noteId: string
+    noteId: string,
 ): Promise<{ success: boolean; message: string }> {
-    console.log(`Attempting to delete note ${noteId} for user ${userId}`);
+    logger.info(`Attempting to delete note ${noteId} for user ${userId}`);
 
     try {
         const { data, error } = await supabase
@@ -240,22 +240,21 @@ export async function DeleteNote(
             .single();
 
         if (error) {
-            console.error(`Supabase error deleting note ${noteId} for user ${userId}:`, error);
+            logger.error(`Supabase error deleting note ${noteId} for user ${userId}:`, error);
             return { success: false, message: `Database error: ${error.message}` };
         }
 
         if (!data) {
             const errorMsg = `Note ${noteId} not found or not owned by user ${userId}`;
-            console.warn(errorMsg);
+            logger.warn(errorMsg);
             return { success: false, message: errorMsg };
         }
 
         const successMsg = `Successfully deleted note "${data.title}" for user ${userId}`;
-        console.log(successMsg);
+        logger.info(successMsg);
         return { success: true, message: successMsg };
-
     } catch (err) {
-        console.error(`Unexpected error in DeleteNote for user ${userId}:`, err);
+        logger.error(`Unexpected error in DeleteNote for user ${userId}:`, err);
         const errorMessage = err instanceof Error ? err.message : String(err);
         return { success: false, message: `An unexpected error occurred: ${errorMessage}` };
     }
@@ -271,9 +270,15 @@ export async function DeleteNote(
 export async function ListNoteTitles(
     supabase: SupabaseClient,
     userId: string,
-    limit: number = 50
-): Promise<{ success: boolean; data?: { note_id: string; title: string; created_at: string }[]; message: string }> {
-    console.log(`Attempting to list note titles for user ${userId}`);
+    limit: number = 50,
+): Promise<
+    {
+        success: boolean;
+        data?: { note_id: string; title: string; created_at: string }[];
+        message: string;
+    }
+> {
+    logger.info(`Attempting to list note titles for user ${userId}`);
 
     try {
         const { data, error } = await supabase
@@ -284,7 +289,7 @@ export async function ListNoteTitles(
             .limit(limit);
 
         if (error) {
-            console.error(`Supabase error listing note titles for user ${userId}:`, error);
+            logger.error(`Supabase error listing note titles for user ${userId}:`, error);
             return { success: false, message: `Database error: ${error.message}` };
         }
 
@@ -294,20 +299,20 @@ export async function ListNoteTitles(
         let successMsg = `Found ${noteTitles.length} note(s) for user ${userId}`;
 
         if (noteTitles.length > 0) {
-            successMsg += "\n\nYour Notes:";
+            successMsg += '\n\nYour Notes:';
             noteTitles.forEach((note, index) => {
                 const createdDate = new Date(note.created_at).toLocaleDateString();
                 successMsg += `\n${index + 1}. "${note.title}"`;
             });
         } else {
-            successMsg += "\n\nNo notes found. You can create your first note by saying something like 'Take note that...'";
+            successMsg +=
+                "\n\nNo notes found. You can create your first note by saying something like 'Take note that...'";
         }
 
-        console.log(successMsg);
+        logger.info(successMsg);
         return { success: true, data: noteTitles, message: successMsg };
-
     } catch (err) {
-        console.error(`Unexpected error in ListNoteTitles for user ${userId}:`, err);
+        logger.error(`Unexpected error in ListNoteTitles for user ${userId}:`, err);
         const errorMessage = err instanceof Error ? err.message : String(err);
         return { success: false, message: `An unexpected error occurred: ${errorMessage}` };
     }
@@ -323,9 +328,9 @@ export async function ListNoteTitles(
 export async function GetAllNotes(
     supabase: SupabaseClient,
     userId: string,
-    limit: number = 50
+    limit: number = 50,
 ): Promise<{ success: boolean; notes?: INote[]; message: string }> {
-    console.log(`Attempting to get all notes for user ${userId}`);
+    logger.info(`Attempting to get all notes for user ${userId}`);
 
     try {
         const { data, error } = await supabase
@@ -336,17 +341,16 @@ export async function GetAllNotes(
             .limit(limit);
 
         if (error) {
-            console.error(`Supabase error getting notes for user ${userId}:`, error);
+            logger.error(`Supabase error getting notes for user ${userId}:`, error);
             return { success: false, message: `Database error: ${error.message}` };
         }
 
         const notes = data as INote[];
         const successMsg = `Retrieved ${notes.length} note(s) for user ${userId}`;
-        console.log(successMsg);
+        logger.info(successMsg);
         return { success: true, notes, message: successMsg };
-
     } catch (err) {
-        console.error(`Unexpected error in GetAllNotes for user ${userId}:`, err);
+        logger.error(`Unexpected error in GetAllNotes for user ${userId}:`, err);
         const errorMessage = err instanceof Error ? err.message : String(err);
         return { success: false, message: `An unexpected error occurred: ${errorMessage}` };
     }

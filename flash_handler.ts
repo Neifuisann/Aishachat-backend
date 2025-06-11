@@ -1,11 +1,14 @@
-import { GoogleGenAI, HarmBlockThreshold, HarmCategory, Type } from "npm:@google/genai";
-import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
-import { apiKeyManager } from "./config.ts";
-import { ManageData } from "./data_manager.ts";
-import { ScheduleManager } from "./schedule_manager.ts";
-import { ReadingManager } from "./reading_handler.ts";
-import { createSystemPrompt, getChatHistory } from "./supabase.ts";
-import { performGoogleSearch } from "./google_search_handler.ts";
+import { GoogleGenAI, HarmBlockThreshold, HarmCategory, Type } from 'npm:@google/genai';
+import type { SupabaseClient } from 'jsr:@supabase/supabase-js@2';
+import { apiKeyManager } from './config.ts';
+import { ManageData } from './data_manager.ts';
+import { ScheduleManager } from './schedule_manager.ts';
+import { Logger } from './logger.ts';
+
+const logger = new Logger('[Flash]');
+import { ReadingManager } from './reading_handler.ts';
+import { createSystemPrompt, getChatHistory } from './supabase.ts';
+import { performGoogleSearch } from './google_search_handler.ts';
 
 // ===========================
 // Type Definitions
@@ -66,18 +69,24 @@ interface RetryConfig {
 class ScheduleConversationHelper {
     static parseNaturalTime(input: string, currentTime: Date = new Date()): string | null {
         const normalized = input.toLowerCase().trim();
-        
+
         // Time-based patterns
         const timePatterns = [
             { pattern: /(\d{1,2}):(\d{2})\s*(am|pm)?/i, handler: this.parseExactTime },
             { pattern: /(\d{1,2})\s*(am|pm)/i, handler: this.parseHourTime },
-            { pattern: /in\s+(\d+)\s+hour/i, handler: (m: RegExpMatchArray) => this.addHours(currentTime, parseInt(m[1])) },
-            { pattern: /in\s+(\d+)\s+minute/i, handler: (m: RegExpMatchArray) => this.addMinutes(currentTime, parseInt(m[1])) },
-            { pattern: /morning/i, handler: () => "09:00" },
-            { pattern: /noon|lunch/i, handler: () => "12:00" },
-            { pattern: /afternoon/i, handler: () => "15:00" },
-            { pattern: /evening/i, handler: () => "18:00" },
-            { pattern: /night/i, handler: () => "20:00" }
+            {
+                pattern: /in\s+(\d+)\s+hour/i,
+                handler: (m: RegExpMatchArray) => this.addHours(currentTime, parseInt(m[1])),
+            },
+            {
+                pattern: /in\s+(\d+)\s+minute/i,
+                handler: (m: RegExpMatchArray) => this.addMinutes(currentTime, parseInt(m[1])),
+            },
+            { pattern: /morning/i, handler: () => '09:00' },
+            { pattern: /noon|lunch/i, handler: () => '12:00' },
+            { pattern: /afternoon/i, handler: () => '15:00' },
+            { pattern: /evening/i, handler: () => '18:00' },
+            { pattern: /night/i, handler: () => '20:00' },
         ];
 
         for (const { pattern, handler } of timePatterns) {
@@ -115,19 +124,23 @@ class ScheduleConversationHelper {
 
     private static addHours(date: Date, hours: number): string {
         const newDate = new Date(date.getTime() + hours * 60 * 60 * 1000);
-        return `${newDate.getHours().toString().padStart(2, '0')}:${newDate.getMinutes().toString().padStart(2, '0')}`;
+        return `${newDate.getHours().toString().padStart(2, '0')}:${
+            newDate.getMinutes().toString().padStart(2, '0')
+        }`;
     }
 
     private static addMinutes(date: Date, minutes: number): string {
         const newDate = new Date(date.getTime() + minutes * 60 * 1000);
-        return `${newDate.getHours().toString().padStart(2, '0')}:${newDate.getMinutes().toString().padStart(2, '0')}`;
+        return `${newDate.getHours().toString().padStart(2, '0')}:${
+            newDate.getMinutes().toString().padStart(2, '0')
+        }`;
     }
 
     static generateScheduleConfirmation(
-        title: string, 
-        time: string, 
-        type: string, 
-        targetDate?: string
+        title: string,
+        time: string,
+        type: string,
+        targetDate?: string,
     ): string {
         const timeIn12Hour = this.convertTo12Hour(time);
         let confirmation = `I'll schedule "${title}" `;
@@ -147,7 +160,7 @@ class ScheduleConversationHelper {
                 confirmation += `at ${timeIn12Hour}`;
         }
 
-        return confirmation + ". Is this correct?";
+        return confirmation + '. Is this correct?';
     }
 
     static convertTo12Hour(time24: string): string {
@@ -159,11 +172,11 @@ class ScheduleConversationHelper {
 
     static formatDate(dateStr: string): string {
         const date = new Date(dateStr);
-        const options: Intl.DateTimeFormatOptions = { 
-            weekday: 'long', 
-            year: 'numeric', 
-            month: 'long', 
-            day: 'numeric' 
+        const options: Intl.DateTimeFormatOptions = {
+            weekday: 'long',
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
         };
         return date.toLocaleDateString('en-US', options);
     }
@@ -171,18 +184,22 @@ class ScheduleConversationHelper {
     static generateConflictMessage(conflicts: any[]): string {
         if (conflicts.length === 1) {
             const conflict = conflicts[0];
-            return `You already have "${conflict.title}" scheduled at ${this.convertTo12Hour(conflict.scheduled_time)}. Would you like to:\n` +
-                   `1. Pick a different time\n` +
-                   `2. Replace the existing schedule\n` +
-                   `3. Keep both (they will overlap)\n` +
-                   `Just tell me what you'd prefer.`;
+            return `You already have "${conflict.title}" scheduled at ${
+                this.convertTo12Hour(conflict.scheduled_time)
+            }. Would you like to:\n` +
+                `1. Pick a different time\n` +
+                `2. Replace the existing schedule\n` +
+                `3. Keep both (they will overlap)\n` +
+                `Just tell me what you'd prefer.`;
         } else {
-            const conflictList = conflicts.map(c => `"${c.title}" at ${this.convertTo12Hour(c.scheduled_time)}`).join(', ');
+            const conflictList = conflicts.map((c) =>
+                `"${c.title}" at ${this.convertTo12Hour(c.scheduled_time)}`
+            ).join(', ');
             return `You have multiple schedules at this time: ${conflictList}. Would you like to:\n` +
-                   `1. Pick a different time\n` +
-                   `2. Replace one of them\n` +
-                   `3. Keep all (they will overlap)\n` +
-                   `What would work best for you?`;
+                `1. Pick a different time\n` +
+                `2. Replace one of them\n` +
+                `3. Keep all (they will overlap)\n` +
+                `What would work best for you?`;
         }
     }
 }
@@ -196,7 +213,7 @@ const DEFAULT_RETRY_CONFIG: RetryConfig = {
     baseDelayMs: 1000,
     maxDelayMs: 10000,
     backoffMultiplier: 2,
-    retryableStatusCodes: [500, 502, 503, 504, 429]
+    retryableStatusCodes: [500, 502, 503, 504, 429],
 };
 
 const RETRYABLE_ERROR_MESSAGES = [
@@ -211,19 +228,19 @@ const RETRYABLE_ERROR_MESSAGES = [
     'server error',
     'connection reset',
     'timeout',
-    'network error'
+    'network error',
 ];
 
 const MODEL_CONFIG = {
     model: 'gemini-2.5-flash-preview-05-20',
     temperature: 1,
     thinkingBudget: 0,
-    responseMimeType: 'text/plain'
+    responseMimeType: 'text/plain',
 };
 
 const VISION_CONFIG = {
     temperature: 0.3,
-    thinkingBudget: 2000
+    thinkingBudget: 2000,
 };
 
 // ===========================
@@ -233,11 +250,20 @@ const VISION_CONFIG = {
 class ConfigurationFactory {
     static getRetryConfig(): RetryConfig {
         return {
-            maxRetries: parseInt(Deno.env.get("GEMINI_MAX_RETRIES") || String(DEFAULT_RETRY_CONFIG.maxRetries)),
-            baseDelayMs: parseInt(Deno.env.get("GEMINI_BASE_DELAY_MS") || String(DEFAULT_RETRY_CONFIG.baseDelayMs)),
-            maxDelayMs: parseInt(Deno.env.get("GEMINI_MAX_DELAY_MS") || String(DEFAULT_RETRY_CONFIG.maxDelayMs)),
-            backoffMultiplier: parseFloat(Deno.env.get("GEMINI_BACKOFF_MULTIPLIER") || String(DEFAULT_RETRY_CONFIG.backoffMultiplier)),
-            retryableStatusCodes: DEFAULT_RETRY_CONFIG.retryableStatusCodes
+            maxRetries: parseInt(
+                Deno.env.get('GEMINI_MAX_RETRIES') || String(DEFAULT_RETRY_CONFIG.maxRetries),
+            ),
+            baseDelayMs: parseInt(
+                Deno.env.get('GEMINI_BASE_DELAY_MS') || String(DEFAULT_RETRY_CONFIG.baseDelayMs),
+            ),
+            maxDelayMs: parseInt(
+                Deno.env.get('GEMINI_MAX_DELAY_MS') || String(DEFAULT_RETRY_CONFIG.maxDelayMs),
+            ),
+            backoffMultiplier: parseFloat(
+                Deno.env.get('GEMINI_BACKOFF_MULTIPLIER') ||
+                    String(DEFAULT_RETRY_CONFIG.backoffMultiplier),
+            ),
+            retryableStatusCodes: DEFAULT_RETRY_CONFIG.retryableStatusCodes,
         };
     }
 
@@ -246,10 +272,10 @@ class ConfigurationFactory {
             HarmCategory.HARM_CATEGORY_HARASSMENT,
             HarmCategory.HARM_CATEGORY_HATE_SPEECH,
             HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT
-        ].map(category => ({
+            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+        ].map((category) => ({
             category,
-            threshold: HarmBlockThreshold.BLOCK_NONE
+            threshold: HarmBlockThreshold.BLOCK_NONE,
         }));
     }
 }
@@ -260,7 +286,7 @@ class ConfigurationFactory {
 
 class RetryService {
     private static sleep(ms: number): Promise<void> {
-        return new Promise(resolve => setTimeout(resolve, ms));
+        return new Promise((resolve) => setTimeout(resolve, ms));
     }
 
     private static isRetryableError(error: any): boolean {
@@ -269,7 +295,7 @@ class RetryService {
         }
 
         const errorMessage = error.message?.toLowerCase() || '';
-        return RETRYABLE_ERROR_MESSAGES.some(msg => errorMessage.includes(msg));
+        return RETRYABLE_ERROR_MESSAGES.some((msg) => errorMessage.includes(msg));
     }
 
     private static calculateDelay(attempt: number, config: RetryConfig): number {
@@ -281,7 +307,7 @@ class RetryService {
     static async withRetry<T>(
         operation: () => Promise<T>,
         operationName: string,
-        config: RetryConfig = ConfigurationFactory.getRetryConfig()
+        config: RetryConfig = ConfigurationFactory.getRetryConfig(),
     ): Promise<T> {
         let lastError: any;
 
@@ -289,24 +315,30 @@ class RetryService {
             try {
                 if (attempt > 0) {
                     const delay = this.calculateDelay(attempt - 1, config);
-                    console.log(`Retrying ${operationName} (attempt ${attempt}/${config.maxRetries}) after ${Math.round(delay)}ms delay`);
+                    logger.info(
+                        `Retrying ${operationName} (attempt ${attempt}/${config.maxRetries}) after ${
+                            Math.round(delay)
+                        }ms delay`,
+                    );
                     await this.sleep(delay);
                 }
 
                 const result = await operation();
 
                 if (attempt > 0) {
-                    console.log(`${operationName} succeeded on attempt ${attempt + 1}`);
+                    logger.info(`${operationName} succeeded on attempt ${attempt + 1}`);
                 }
 
                 return result;
             } catch (error) {
                 lastError = error;
 
-                console.error(`${operationName} failed on attempt ${attempt + 1}:`, {
-                    status: error && typeof error === 'object' && 'status' in error ? (error as any).status : 'unknown',
+                logger.error(`${operationName} failed on attempt ${attempt + 1}:`, {
+                    status: error && typeof error === 'object' && 'status' in error
+                        ? (error as any).status
+                        : 'unknown',
                     message: error instanceof Error ? error.message : String(error),
-                    retryable: this.isRetryableError(error)
+                    retryable: this.isRetryableError(error),
                 });
 
                 if (attempt === config.maxRetries || !this.isRetryableError(error)) {
@@ -315,7 +347,10 @@ class RetryService {
             }
         }
 
-        console.error(`${operationName} failed after ${config.maxRetries + 1} attempts. Final error:`, lastError);
+        logger.error(
+            `${operationName} failed after ${config.maxRetries + 1} attempts. Final error:`,
+            lastError,
+        );
         throw lastError;
     }
 }
@@ -334,203 +369,234 @@ class ToolDefinitions {
                     this.getReadingManagerTool(),
                     this.getSetVolumeTool(),
                     this.getVisionTool(),
-                    this.getWebSearchTool()
-                ]
-            }
+                    this.getWebSearchTool(),
+                ],
+            },
         ];
     }
 
     private static getManageDataTool() {
         return {
-            name: "ManageData",
-            description: "Unified modal interface for managing persona (AI memory) and notes (user data). First select mode ('Persona' or 'Notes'), then action. Use for all note-taking and persona management tasks.",
+            name: 'ManageData',
+            description:
+                "Unified modal interface for managing persona (AI memory) and notes (user data). First select mode ('Persona' or 'Notes'), then action. Use for all note-taking and persona management tasks.",
             parameters: {
                 type: Type.OBJECT,
-                required: ["mode", "action"],
+                required: ['mode', 'action'],
                 properties: {
                     mode: {
                         type: Type.STRING,
-                        description: "Data type to manage: 'Persona' (AI's knowledge about user preferences) or 'Notes' (user's personal notes and reminders)."
+                        description:
+                            "Data type to manage: 'Persona' (AI's knowledge about user preferences) or 'Notes' (user's personal notes and reminders).",
                     },
                     action: {
                         type: Type.STRING,
-                        description: "Action to perform: 'List' (list note titles), 'Search' (retrieve/find data), 'Edit' (add/update data), or 'Delete' (remove data)."
+                        description:
+                            "Action to perform: 'List' (list note titles), 'Search' (retrieve/find data), 'Edit' (add/update data), or 'Delete' (remove data).",
                     },
                     query: {
                         type: Type.STRING,
-                        description: "Search keywords for Notes Search (e.g., 'shopping list', 'meeting notes')."
+                        description:
+                            "Search keywords for Notes Search (e.g., 'shopping list', 'meeting notes').",
                     },
                     noteId: {
                         type: Type.STRING,
-                        description: "Note ID for Notes Edit/Delete of existing notes (get from Notes Search first)."
+                        description:
+                            'Note ID for Notes Edit/Delete of existing notes (get from Notes Search first).',
                     },
                     title: {
                         type: Type.STRING,
-                        description: "Note title for Notes Edit (optional, auto-generated if not provided)."
+                        description:
+                            'Note title for Notes Edit (optional, auto-generated if not provided).',
                     },
                     body: {
                         type: Type.STRING,
-                        description: "Note content for Notes Edit (required when adding new note)."
+                        description: 'Note content for Notes Edit (required when adding new note).',
                     },
                     newPersona: {
                         type: Type.STRING,
-                        description: "Complete persona description for Persona Edit (e.g., 'likes pizza, dislikes loud noises, prefers morning conversations')."
+                        description:
+                            "Complete persona description for Persona Edit (e.g., 'likes pizza, dislikes loud noises, prefers morning conversations').",
                     },
                     dateFrom: {
                         type: Type.STRING,
-                        description: "Start date for Notes Search (optional, ISO format: '2024-01-01T00:00:00Z')."
+                        description:
+                            "Start date for Notes Search (optional, ISO format: '2024-01-01T00:00:00Z').",
                     },
                     dateTo: {
                         type: Type.STRING,
-                        description: "End date for Notes Search (optional, ISO format: '2024-12-31T23:59:59Z')."
+                        description:
+                            "End date for Notes Search (optional, ISO format: '2024-12-31T23:59:59Z').",
                     },
                     imageId: {
                         type: Type.STRING,
-                        description: "Image ID for Notes Edit (optional, if note relates to captured image)."
-                    }
-                }
-            }
+                        description:
+                            'Image ID for Notes Edit (optional, if note relates to captured image).',
+                    },
+                },
+            },
         };
     }
 
     private static getScheduleManagerTool() {
         return {
-            name: "ScheduleManager",
-            description: "Smart scheduling assistant for blind users. Handles natural language like 'remind me to take medicine at 8am', 'what's on my schedule today?', 'schedule doctor appointment tomorrow at 3pm'. Automatically checks conflicts and suggests alternatives.",
+            name: 'ScheduleManager',
+            description:
+                "Smart scheduling assistant for blind users. Handles natural language like 'remind me to take medicine at 8am', 'what's on my schedule today?', 'schedule doctor appointment tomorrow at 3pm'. Automatically checks conflicts and suggests alternatives.",
             parameters: {
                 type: Type.OBJECT,
-                required: ["mode"],
+                required: ['mode'],
                 properties: {
                     mode: {
                         type: Type.STRING,
-                        description: "Schedule operation: 'List' (check schedule with time announcements), 'Add' (create with conflict checking), 'Update' (modify), 'Delete' (remove), 'Search' (find by keywords), 'CheckConflict' (verify time availability), 'Complete' (mark as done and archive)."
+                        description:
+                            "Schedule operation: 'List' (check schedule with time announcements), 'Add' (create with conflict checking), 'Update' (modify), 'Delete' (remove), 'Search' (find by keywords), 'CheckConflict' (verify time availability), 'Complete' (mark as done and archive).",
                     },
                     scheduleId: {
                         type: Type.STRING,
-                        description: "Schedule ID for Update/Delete (get from List/Search first)."
+                        description: 'Schedule ID for Update/Delete (get from List/Search first).',
                     },
                     title: {
                         type: Type.STRING,
-                        description: "What to schedule (required for Add). Examples: 'Take medicine', 'Team meeting', 'Lunch break', 'Exercise'."
+                        description:
+                            "What to schedule (required for Add). Examples: 'Take medicine', 'Team meeting', 'Lunch break', 'Exercise'.",
                     },
                     scheduledTime: {
                         type: Type.STRING,
-                        description: "Natural language time (required for Add): '8am', '2:30pm', 'in 30 minutes', 'morning', 'noon', 'evening'. System converts to HH:MM format."
+                        description:
+                            "Natural language time (required for Add): '8am', '2:30pm', 'in 30 minutes', 'morning', 'noon', 'evening'. System converts to HH:MM format.",
                     },
                     scheduleType: {
                         type: Type.STRING,
-                        description: "Frequency: 'once' (default for single events), 'daily' (every day), 'weekly' (same day each week), 'custom' (complex patterns)."
+                        description:
+                            "Frequency: 'once' (default for single events), 'daily' (every day), 'weekly' (same day each week), 'custom' (complex patterns).",
                     },
                     description: {
                         type: Type.STRING,
-                        description: "Additional notes about the schedule (optional). Example: 'Take 2 pills with water'."
+                        description:
+                            "Additional notes about the schedule (optional). Example: 'Take 2 pills with water'.",
                     },
                     schedulePattern: {
                         type: Type.OBJECT,
-                        description: "For 'weekly'/'custom' types. Example: {weekdays: [1,3,5]} for Mon/Wed/Fri, {interval: 2} for every 2 days."
+                        description:
+                            "For 'weekly'/'custom' types. Example: {weekdays: [1,3,5]} for Mon/Wed/Fri, {interval: 2} for every 2 days.",
                     },
                     targetDate: {
                         type: Type.STRING,
-                        description: "Date for 'once' schedules in YYYY-MM-DD (optional, defaults to today). Natural dates like 'tomorrow' should be converted."
+                        description:
+                            "Date for 'once' schedules in YYYY-MM-DD (optional, defaults to today). Natural dates like 'tomorrow' should be converted.",
                     },
                     query: {
                         type: Type.STRING,
-                        description: "Keywords to search schedules (required for Search). Searches in both title and description."
-                    }
-                }
-            }
+                        description:
+                            'Keywords to search schedules (required for Search). Searches in both title and description.',
+                    },
+                },
+            },
         };
     }
 
     private static getReadingManagerTool() {
         return {
-            name: "ReadingManager",
-            description: "Comprehensive book reading system with browse, search, continue reading with recap, navigation, settings, and bookmarks. Handles all book-related requests.",
+            name: 'ReadingManager',
+            description:
+                'Comprehensive book reading system with browse, search, continue reading with recap, navigation, settings, and bookmarks. Handles all book-related requests.',
             parameters: {
-                type: "OBJECT",
+                type: 'OBJECT',
                 properties: {
                     mode: {
-                        type: "STRING",
-                        description: "Operation mode: 'Browse' (discover books), 'Continue' (resume with recap), 'Search' (find books), 'Navigate' (move pages), 'Settings' (preferences), 'Bookmark' (save position)"
+                        type: 'STRING',
+                        description:
+                            "Operation mode: 'Browse' (discover books), 'Continue' (resume with recap), 'Search' (find books), 'Navigate' (move pages), 'Settings' (preferences), 'Bookmark' (save position)",
                     },
                     action: {
-                        type: "STRING",
-                        description: "Mode-specific action. Browse: 'MyBooks'/'Recent'. Navigate: 'next'/'previous'/'goto'/'contents'. Settings: 'get'/'set'. Bookmark: 'add'."
+                        type: 'STRING',
+                        description:
+                            "Mode-specific action. Browse: 'MyBooks'/'Recent'. Navigate: 'next'/'previous'/'goto'/'contents'. Settings: 'get'/'set'. Bookmark: 'add'.",
                     },
                     bookId: {
-                        type: "STRING",
-                        description: "Book ID from books table (optional for Continue, required for Navigate/Bookmark)"
+                        type: 'STRING',
+                        description:
+                            'Book ID from books table (optional for Continue, required for Navigate/Bookmark)',
                     },
                     searchQuery: {
-                        type: "STRING",
-                        description: "Search terms for finding books by title, author, or topic (Search mode)"
+                        type: 'STRING',
+                        description:
+                            'Search terms for finding books by title, author, or topic (Search mode)',
                     },
                     pageNumber: {
-                        type: "NUMBER",
-                        description: "Target page number (Navigate 'goto' action or Bookmark)"
+                        type: 'NUMBER',
+                        description: "Target page number (Navigate 'goto' action or Bookmark)",
                     },
                     readingMode: {
-                        type: "STRING",
-                        description: "Reading preference: 'fullpage', 'paragraphs', or 'sentences' (Settings mode)"
+                        type: 'STRING',
+                        description:
+                            "Reading preference: 'fullpage', 'paragraphs', or 'sentences' (Settings mode)",
                     },
                     readingAmount: {
-                        type: "NUMBER",
-                        description: "Number of paragraphs/sentences to read at once (Settings mode)"
-                    }
+                        type: 'NUMBER',
+                        description:
+                            'Number of paragraphs/sentences to read at once (Settings mode)',
+                    },
                 },
-                required: ["mode", "action"]
-            }
+                required: ['mode', 'action'],
+            },
         };
     }
 
     private static getSetVolumeTool() {
         return {
-            name: "SetVolume",
-            description: "Adjusts the device volume level. Use ONLY when user explicitly mentions volume, sound level, hearing issues, or asks to make it louder/quieter. Do not use for general audio problems.",
+            name: 'SetVolume',
+            description:
+                'Adjusts the device volume level. Use ONLY when user explicitly mentions volume, sound level, hearing issues, or asks to make it louder/quieter. Do not use for general audio problems.',
             parameters: {
                 type: Type.OBJECT,
-                required: ["volumeLevel"],
+                required: ['volumeLevel'],
                 properties: {
                     volumeLevel: {
                         type: Type.NUMBER,
-                        description: "Volume level as a percentage between 0 and 100. Use 100 for maximum volume when user can't hear."
-                    }
-                }
-            }
+                        description:
+                            "Volume level as a percentage between 0 and 100. Use 100 for maximum volume when user can't hear.",
+                    },
+                },
+            },
         };
     }
 
     private static getVisionTool() {
         return {
-            name: "GetVision",
-            description: "Captures an image using the device's camera and analyzes it with Flash 2.5 intelligence. Use when user asks about visual content: 'What do you see?', 'What am I holding?', 'Describe what's in front of me', 'Read this text', 'What color is this?', 'Tell me what you're seeing', or Vietnamese equivalents like 'bạn đang nhìn thấy gì', 'mô tả những gì bạn thấy', 'tôi đang cầm gì'. Very resource intensive - do not use speculatively.",
+            name: 'GetVision',
+            description:
+                "Captures an image using the device's camera and analyzes it with Flash 2.5 intelligence. Use when user asks about visual content: 'What do you see?', 'What am I holding?', 'Describe what's in front of me', 'Read this text', 'What color is this?', 'Tell me what you're seeing', or Vietnamese equivalents like 'bạn đang nhìn thấy gì', 'mô tả những gì bạn thấy', 'tôi đang cầm gì'. Very resource intensive - do not use speculatively.",
             parameters: {
-                type: "OBJECT",
+                type: 'OBJECT',
                 properties: {
                     prompt: {
-                        type: "STRING",
-                        description: "The user's exact command in reported speech with no changes. Pass exactly what the user said."
-                    }
+                        type: 'STRING',
+                        description:
+                            "The user's exact command in reported speech with no changes. Pass exactly what the user said.",
+                    },
                 },
-                required: ["prompt"]
-            }
+                required: ['prompt'],
+            },
         };
     }
 
     private static getWebSearchTool() {
         return {
-            name: "Websearch",
-            description: "You use Websearch for real-time information like weather and news, or to verify facts. You do not search for general things that you or an LLM already know.",
+            name: 'Websearch',
+            description:
+                'You use Websearch for real-time information like weather and news, or to verify facts. You do not search for general things that you or an LLM already know.',
             parameters: {
-                type: "OBJECT",
+                type: 'OBJECT',
                 properties: {
                     query: {
-                        type: "STRING",
-                        description: "The information you want to search."
-                    }
+                        type: 'STRING',
+                        description: 'The information you want to search.',
+                    },
                 },
-                required: ["query"]
-            }
+                required: ['query'],
+            },
         };
     }
 }
@@ -671,13 +737,13 @@ The image can be cutoff and not all number is visible then follow my rule rather
 
     static buildBaseInstruction(timestamp: string = new Date().toISOString()): any[] {
         return [{
-            text: this.BASE_INSTRUCTION.replace('{timestamp}', timestamp)
+            text: this.BASE_INSTRUCTION.replace('{timestamp}', timestamp),
         }];
     }
 
     static buildVisionInstruction(): any[] {
         return [{
-            text: this.VISION_INSTRUCTION
+            text: this.VISION_INSTRUCTION,
         }];
     }
 
@@ -685,22 +751,25 @@ The image can be cutoff and not all number is visible then follow my rule rather
         chatHistory: IConversation[],
         user: any,
         supabase: SupabaseClient,
-        currentVolume?: number | null
+        currentVolume?: number | null,
     ): any[] {
         const systemPromptText = createSystemPrompt(
             chatHistory,
             { user, supabase, timestamp: new Date().toISOString() },
-            currentVolume
-        ) || "You are a helpful assistant.";
+            currentVolume,
+        ) || 'You are a helpful assistant.';
 
-        const baseInstructions = this.BASE_INSTRUCTION.replace('{timestamp}', new Date().toISOString());
+        const baseInstructions = this.BASE_INSTRUCTION.replace(
+            '{timestamp}',
+            new Date().toISOString(),
+        );
         const flashInstructions = baseInstructions.replace(
             '</text_to_speech_formatting>',
-            `</text_to_speech_formatting>\n\n${systemPromptText}`
+            `</text_to_speech_formatting>\n\n${systemPromptText}`,
         );
 
         return [{
-            text: flashInstructions
+            text: flashInstructions,
         }];
     }
 }
@@ -712,7 +781,7 @@ The image can be cutoff and not all number is visible then follow my rule rather
 class FunctionCallHandler {
     constructor(
         private supabase: SupabaseClient,
-        private sessionData: SessionData
+        private sessionData: SessionData,
     ) {}
 
     async handleFunctionCalls(functionCalls: any[]): Promise<any[]> {
@@ -722,15 +791,18 @@ class FunctionCallHandler {
             const functionResult = await this.executeFunctionCall(call);
             functionResults.push({
                 name: call.name,
-                result: functionResult
+                result: functionResult,
             });
         }
 
-        console.log(`Flash 2.5 function results:`, functionResults.map(fr => ({
-            name: fr.name,
-            success: fr.result?.success,
-            messagePreview: fr.result?.message?.substring(0, 100) + '...'
-        })));
+        logger.info(
+            `Flash 2.5 function results:`,
+            functionResults.map((fr) => ({
+                name: fr.name,
+                success: fr.result?.success,
+                messagePreview: fr.result?.message?.substring(0, 100) + '...',
+            })),
+        );
 
         return functionResults;
     }
@@ -739,7 +811,7 @@ class FunctionCallHandler {
         const { name, args } = call;
 
         switch (name) {
-            case "ManageData":
+            case 'ManageData':
                 return await ManageData(
                     this.supabase,
                     this.sessionData.userId,
@@ -752,13 +824,13 @@ class FunctionCallHandler {
                     args.newPersona,
                     args.dateFrom,
                     args.dateTo,
-                    args.imageId
+                    args.imageId,
                 );
 
-            case "ScheduleManager":
+            case 'ScheduleManager':
                 return await this.handleScheduleManager(args);
 
-            case "ReadingManager":
+            case 'ReadingManager':
                 return await ReadingManager(
                     this.supabase,
                     this.sessionData.userId,
@@ -768,31 +840,31 @@ class FunctionCallHandler {
                     args.searchQuery,
                     args.pageNumber,
                     args.readingMode,
-                    args.readingAmount
+                    args.readingAmount,
                 );
 
-            case "SetVolume":
+            case 'SetVolume':
                 if (this.sessionData.deviceCallbacks?.setVolume) {
                     return await this.sessionData.deviceCallbacks.setVolume(
                         args.volumeLevel,
-                        `volume-${Date.now()}`
+                        `volume-${Date.now()}`,
                     );
                 }
                 return {
                     success: false,
-                    message: "Volume control not available - device callbacks not configured"
+                    message: 'Volume control not available - device callbacks not configured',
                 };
 
-            case "GetVision":
+            case 'GetVision':
                 return await this.handleVisionCall(args);
 
-            case "Websearch":
+            case 'Websearch':
                 return await this.handleWebSearch(args);
 
             default:
                 return {
                     success: false,
-                    message: `Unknown function: ${name}`
+                    message: `Unknown function: ${name}`,
                 };
         }
     }
@@ -803,7 +875,7 @@ class FunctionCallHandler {
             const parsedTime = ScheduleConversationHelper.parseNaturalTime(args.scheduledTime);
             if (parsedTime) {
                 args.scheduledTime = parsedTime;
-                console.log(`Parsed time "${args.scheduledTime}" to "${parsedTime}"`);
+                logger.debug(`Parsed time "${args.scheduledTime}" to "${parsedTime}"`);
             }
         }
 
@@ -819,7 +891,7 @@ class FunctionCallHandler {
             this.sessionData.scheduleContext = {
                 lastScheduleAction: 'add',
                 lastScheduleTime: args.scheduledTime,
-                lastScheduleTitle: args.title
+                lastScheduleTitle: args.title,
             };
         }
 
@@ -834,23 +906,28 @@ class FunctionCallHandler {
             args.description,
             args.schedulePattern,
             args.targetDate,
-            args.query
+            args.query,
         );
 
         // Enhanced response formatting for List mode
         if (args.mode === 'List' && result.success && result.data) {
             const schedules = result.data.schedules || [];
             const currentTime = new Date();
-            
+
             if (schedules.length === 0) {
-                result.message = "You don't have any schedules set up yet. Would you like to add one?";
+                result.message =
+                    "You don't have any schedules set up yet. Would you like to add one?";
             } else {
-                let message = `You have ${schedules.length} schedule${schedules.length > 1 ? 's' : ''} today:\n\n`;
-                
+                let message = `You have ${schedules.length} schedule${
+                    schedules.length > 1 ? 's' : ''
+                } today:\n\n`;
+
                 const upcomingSchedules = schedules
                     .filter((s: any) => {
                         const schedTime = new Date(`1970-01-01T${s.scheduled_time}`);
-                        const currentTimeOnly = new Date(`1970-01-01T${currentTime.getHours()}:${currentTime.getMinutes()}:00`);
+                        const currentTimeOnly = new Date(
+                            `1970-01-01T${currentTime.getHours()}:${currentTime.getMinutes()}:00`,
+                        );
                         return schedTime > currentTimeOnly;
                     })
                     .sort((a: any, b: any) => a.scheduled_time.localeCompare(b.scheduled_time));
@@ -858,36 +935,51 @@ class FunctionCallHandler {
                 const pastSchedules = schedules
                     .filter((s: any) => {
                         const schedTime = new Date(`1970-01-01T${s.scheduled_time}`);
-                        const currentTimeOnly = new Date(`1970-01-01T${currentTime.getHours()}:${currentTime.getMinutes()}:00`);
+                        const currentTimeOnly = new Date(
+                            `1970-01-01T${currentTime.getHours()}:${currentTime.getMinutes()}:00`,
+                        );
                         return schedTime <= currentTimeOnly;
                     })
                     .sort((a: any, b: any) => a.scheduled_time.localeCompare(b.scheduled_time));
 
                 // Format upcoming schedules
                 if (upcomingSchedules.length > 0) {
-                    message += "Coming up:\n";
+                    message += 'Coming up:\n';
                     upcomingSchedules.forEach((schedule: any, index: number) => {
-                        const time12 = ScheduleConversationHelper.convertTo12Hour(schedule.scheduled_time);
-                        const timeDiff = this.getTimeDifference(schedule.scheduled_time, currentTime);
+                        const time12 = ScheduleConversationHelper.convertTo12Hour(
+                            schedule.scheduled_time,
+                        );
+                        const timeDiff = this.getTimeDifference(
+                            schedule.scheduled_time,
+                            currentTime,
+                        );
                         message += `- ${schedule.title} at ${time12} (${timeDiff})`;
                         if (schedule.description) {
                             message += ` - ${schedule.description}`;
                         }
                         message += '\n';
                     });
-                    
+
                     const nextSchedule = upcomingSchedules[0];
-                    const nextTime = ScheduleConversationHelper.convertTo12Hour(nextSchedule.scheduled_time);
-                    const nextTimeDiff = this.getTimeDifference(nextSchedule.scheduled_time, currentTime);
-                    message += `\nYour next appointment is "${nextSchedule.title}" at ${nextTime} (${nextTimeDiff}).`;
+                    const nextTime = ScheduleConversationHelper.convertTo12Hour(
+                        nextSchedule.scheduled_time,
+                    );
+                    const nextTimeDiff = this.getTimeDifference(
+                        nextSchedule.scheduled_time,
+                        currentTime,
+                    );
+                    message +=
+                        `\nYour next appointment is "${nextSchedule.title}" at ${nextTime} (${nextTimeDiff}).`;
                 }
 
                 // Format past schedules
                 if (pastSchedules.length > 0) {
-                    if (upcomingSchedules.length > 0) message += "\n\n";
-                    message += "Already passed today:\n";
+                    if (upcomingSchedules.length > 0) message += '\n\n';
+                    message += 'Already passed today:\n';
                     pastSchedules.forEach((schedule: any) => {
-                        const time12 = ScheduleConversationHelper.convertTo12Hour(schedule.scheduled_time);
+                        const time12 = ScheduleConversationHelper.convertTo12Hour(
+                            schedule.scheduled_time,
+                        );
                         message += `- ${schedule.title} at ${time12}`;
                         if (schedule.description) {
                             message += ` - ${schedule.description}`;
@@ -913,14 +1005,16 @@ class FunctionCallHandler {
         const [hours, minutes] = scheduleTime.split(':').map(Number);
         const schedDate = new Date(currentTime);
         schedDate.setHours(hours, minutes, 0, 0);
-        
+
         const diff = schedDate.getTime() - currentTime.getTime();
         const diffMinutes = Math.floor(diff / 60000);
         const diffHours = Math.floor(diffMinutes / 60);
         const remainingMinutes = diffMinutes % 60;
 
         if (diffHours > 0 && remainingMinutes > 0) {
-            return `in ${diffHours} hour${diffHours > 1 ? 's' : ''} and ${remainingMinutes} minute${remainingMinutes > 1 ? 's' : ''}`;
+            return `in ${diffHours} hour${diffHours > 1 ? 's' : ''} and ${remainingMinutes} minute${
+                remainingMinutes > 1 ? 's' : ''
+            }`;
         } else if (diffHours > 0) {
             return `in ${diffHours} hour${diffHours > 1 ? 's' : ''}`;
         } else if (diffMinutes > 0) {
@@ -931,22 +1025,24 @@ class FunctionCallHandler {
     }
 
     private async handleVisionCall(args: any): Promise<any> {
-        console.log(`*GetVision called with prompt: "${args.prompt}"`);
+        logger.info(`*GetVision called with prompt: "${args.prompt}"`);
 
         if (!this.sessionData.deviceCallbacks?.requestPhoto) {
             return {
                 success: false,
-                message: "Vision capture not available - device callbacks not configured"
+                message: 'Vision capture not available - device callbacks not configured',
             };
         }
 
         try {
-            const photoResult = await this.sessionData.deviceCallbacks.requestPhoto(`vision-${Date.now()}`);
+            const photoResult = await this.sessionData.deviceCallbacks.requestPhoto(
+                `vision-${Date.now()}`,
+            );
 
             if (!photoResult.success || !photoResult.imageData) {
                 return {
                     success: false,
-                    message: photoResult.message || "Failed to capture image from device"
+                    message: photoResult.message || 'Failed to capture image from device',
                 };
             }
 
@@ -954,36 +1050,38 @@ class FunctionCallHandler {
             return {
                 success: true,
                 imageData: photoResult.imageData,
-                prompt: args.prompt || "Describe what you see"
+                prompt: args.prompt || 'Describe what you see',
             };
         } catch (err) {
-            console.error(`Error executing GetVision:`, err);
+            logger.error(`Error executing GetVision:`, err);
             return {
                 success: false,
-                message: `Vision capture failed: ${err instanceof Error ? err.message : String(err)}`
+                message: `Vision capture failed: ${
+                    err instanceof Error ? err.message : String(err)
+                }`,
             };
         }
     }
 
     private async handleWebSearch(args: any): Promise<any> {
-        console.log(`*Websearch called with query: "${args.query}"`);
+        logger.info(`*Websearch called with query: "${args.query}"`);
 
         if (typeof args.query !== 'string' || !args.query.trim()) {
             return {
                 success: false,
-                message: "Invalid or missing search query. Expected a non-empty string."
+                message: 'Invalid or missing search query. Expected a non-empty string.',
             };
         }
 
         try {
             const result = await performGoogleSearch(args.query.trim(), this.sessionData.userId);
-            console.log(`Websearch result: ${result.success ? 'Success' : result.message}`);
+            logger.info(`Websearch result: ${result.success ? 'Success' : result.message}`);
             return result;
         } catch (err) {
-            console.error(`Error executing Websearch:`, err);
+            logger.error(`Error executing Websearch:`, err);
             return {
                 success: false,
-                message: `Search failed: ${err instanceof Error ? err.message : String(err)}`
+                message: `Search failed: ${err instanceof Error ? err.message : String(err)}`,
             };
         }
     }
@@ -1006,7 +1104,7 @@ class Flash25SessionManager {
     private initializeAI() {
         const apiKey = apiKeyManager.getCurrentKey();
         if (!apiKey) {
-            throw new Error("API key not available");
+            throw new Error('API key not available');
         }
 
         this.ai = new GoogleGenAI({ apiKey });
@@ -1027,12 +1125,17 @@ class Flash25SessionManager {
         };
     }
 
-    createSession(sessionId: string, userId: string, deviceCallbacks?: DeviceOperationCallbacks, user?: any): void {
-        console.log(`Creating Flash 2.5 session for Live session: ${sessionId}`);
+    createSession(
+        sessionId: string,
+        userId: string,
+        deviceCallbacks?: DeviceOperationCallbacks,
+        user?: any,
+    ): void {
+        logger.info(`Creating Flash 2.5 session for Live session: ${sessionId}`);
 
         const initialContents = [{
             role: 'user',
-            parts: [{ text: "" }],
+            parts: [{ text: '' }],
         }];
 
         this.sessions.set(sessionId, {
@@ -1042,22 +1145,22 @@ class Flash25SessionManager {
             createdAt: new Date(),
             lastUsed: new Date(),
             deviceCallbacks,
-            scheduleContext: {}
+            scheduleContext: {},
         });
 
-        console.log(`Flash 2.5 session ${sessionId} created successfully`);
+        logger.info(`Flash 2.5 session ${sessionId} created successfully`);
     }
 
     async analyzeImage(
         sessionId: string,
         prompt: string,
-        imageDataOrUri: string
+        imageDataOrUri: string,
     ): Promise<FlashResponse> {
         const session = this.sessions.get(sessionId);
         if (!session) {
             return {
                 success: false,
-                message: "Session not found. Please reconnect to create a new session."
+                message: 'Session not found. Please reconnect to create a new session.',
             };
         }
 
@@ -1065,33 +1168,36 @@ class Flash25SessionManager {
             session.lastUsed = new Date();
 
             const imagePart = this.createImagePart(imageDataOrUri);
-            
+
             session.contents.push({
                 role: 'user',
                 parts: [
                     { text: prompt },
-                    imagePart
+                    imagePart,
                 ],
             });
 
             const imageInfo = this.getImageInfo(imageDataOrUri);
-            console.log(`Analyzing image in session ${sessionId} with Flash 2.5 (${imageInfo.type}: ${imageInfo.size})`);
+            logger.info(
+                `Analyzing image in session ${sessionId} with Flash 2.5 (${imageInfo.type}: ${imageInfo.size})`,
+            );
 
             const response = await RetryService.withRetry(
-                () => this.ai.models.generateContentStream({
-                    model: MODEL_CONFIG.model,
-                    config: {
-                        temperature: VISION_CONFIG.temperature,
-                        thinkingConfig: {
-                            thinkingBudget: VISION_CONFIG.thinkingBudget,
+                () =>
+                    this.ai.models.generateContentStream({
+                        model: MODEL_CONFIG.model,
+                        config: {
+                            temperature: VISION_CONFIG.temperature,
+                            thinkingConfig: {
+                                thinkingBudget: VISION_CONFIG.thinkingBudget,
+                            },
+                            safetySettings: ConfigurationFactory.getSafetySettings(),
+                            responseMimeType: MODEL_CONFIG.responseMimeType,
+                            systemInstruction: SystemInstructionBuilder.buildVisionInstruction(),
                         },
-                        safetySettings: ConfigurationFactory.getSafetySettings(),
-                        responseMimeType: MODEL_CONFIG.responseMimeType,
-                        systemInstruction: SystemInstructionBuilder.buildVisionInstruction(),
-                    },
-                    contents: session.contents,
-                }),
-                `Flash 2.5 image analysis (session: ${sessionId})`
+                        contents: session.contents,
+                    }),
+                `Flash 2.5 image analysis (session: ${sessionId})`,
             );
 
             const analysisText = await this.extractTextFromStream(response);
@@ -1103,14 +1209,15 @@ class Flash25SessionManager {
 
             return {
                 success: true,
-                message: analysisText || "Sorry please try again, the image is so shaky."
+                message: analysisText || 'Sorry please try again, the image is so shaky.',
             };
-
         } catch (error) {
-            console.error(`Error analyzing image in session ${sessionId}:`, error);
+            logger.error(`Error analyzing image in session ${sessionId}:`, error);
             return {
                 success: false,
-                message: `Error analyzing image: ${error instanceof Error ? error.message : String(error)}`
+                message: `Error analyzing image: ${
+                    error instanceof Error ? error.message : String(error)
+                }`,
             };
         }
     }
@@ -1119,13 +1226,13 @@ class Flash25SessionManager {
         sessionId: string,
         userCommand: string,
         supabase: SupabaseClient,
-        imageData?: string
+        imageData?: string,
     ): Promise<FlashResponse> {
         const session = this.sessions.get(sessionId);
         if (!session) {
             return {
                 success: false,
-                message: "Session not found. Please reconnect to create a new session."
+                message: 'Session not found. Please reconnect to create a new session.',
             };
         }
 
@@ -1138,17 +1245,18 @@ class Flash25SessionManager {
                 parts: userParts,
             });
 
-            console.log(`Processing action in session ${sessionId}`);
+            logger.info(`Processing action in session ${sessionId}`);
 
             const configToUse = await this.getConfiguration(session, supabase);
 
             const response = await RetryService.withRetry(
-                () => this.ai.models.generateContent({
-                    model: MODEL_CONFIG.model,
-                    config: configToUse,
-                    contents: session.contents,
-                }),
-                `Flash 2.5 action processing (session: ${sessionId})`
+                () =>
+                    this.ai.models.generateContent({
+                        model: MODEL_CONFIG.model,
+                        config: configToUse,
+                        contents: session.contents,
+                    }),
+                `Flash 2.5 action processing (session: ${sessionId})`,
             );
 
             const { functionCalls, textResponse } = this.extractResponseParts(response);
@@ -1159,7 +1267,7 @@ class Flash25SessionManager {
                     sessionId,
                     functionCalls,
                     supabase,
-                    configToUse
+                    configToUse,
                 );
             }
 
@@ -1170,14 +1278,16 @@ class Flash25SessionManager {
 
             return {
                 success: true,
-                message: textResponse || "I understand your request but couldn't determine the appropriate action to take."
+                message: textResponse ||
+                    "I understand your request but couldn't determine the appropriate action to take.",
             };
-
         } catch (error) {
-            console.error(`Error in Flash 2.5 session ${sessionId}:`, error);
+            logger.error(`Error in Flash 2.5 session ${sessionId}:`, error);
             return {
                 success: false,
-                message: `Error processing action: ${error instanceof Error ? error.message : String(error)}`
+                message: `Error processing action: ${
+                    error instanceof Error ? error.message : String(error)
+                }`,
             };
         }
     }
@@ -1186,10 +1296,14 @@ class Flash25SessionManager {
         const session = this.sessions.get(sessionId);
         if (session) {
             const duration = new Date().getTime() - session.createdAt.getTime();
-            console.log(`Destroying Flash 2.5 session ${sessionId} (duration: ${Math.round(duration / 1000)}s, messages: ${session.contents.length})`);
+            logger.info(
+                `Destroying Flash 2.5 session ${sessionId} (duration: ${
+                    Math.round(duration / 1000)
+                }s, messages: ${session.contents.length})`,
+            );
             this.sessions.delete(sessionId);
         } else {
-            console.log(`Flash 2.5 session ${sessionId} not found for destruction`);
+            logger.info(`Flash 2.5 session ${sessionId} not found for destruction`);
         }
     }
 
@@ -1204,12 +1318,12 @@ class Flash25SessionManager {
             lastUsed: session.lastUsed,
             messageCount: session.contents.length,
             duration: new Date().getTime() - session.createdAt.getTime(),
-            scheduleContext: session.scheduleContext
+            scheduleContext: session.scheduleContext,
         };
     }
 
     getAllSessions(): any[] {
-        return Array.from(this.sessions.keys()).map(sessionId => this.getSessionInfo(sessionId));
+        return Array.from(this.sessions.keys()).map((sessionId) => this.getSessionInfo(sessionId));
     }
 
     cleanupOldSessions(maxAgeHours: number = 24): void {
@@ -1224,7 +1338,7 @@ class Flash25SessionManager {
         }
 
         if (cleaned > 0) {
-            console.log(`Cleaned up ${cleaned} old Flash 2.5 sessions`);
+            logger.info(`Cleaned up ${cleaned} old Flash 2.5 sessions`);
         }
     }
 
@@ -1233,16 +1347,16 @@ class Flash25SessionManager {
         if (imageDataOrUri.startsWith('https://')) {
             return {
                 fileData: {
-                    mimeType: "image/jpeg",
-                    fileUri: imageDataOrUri
-                }
+                    mimeType: 'image/jpeg',
+                    fileUri: imageDataOrUri,
+                },
             };
         }
         return {
             inlineData: {
-                mimeType: "image/jpeg",
-                data: imageDataOrUri
-            }
+                mimeType: 'image/jpeg',
+                data: imageDataOrUri,
+            },
         };
     }
 
@@ -1252,7 +1366,7 @@ class Flash25SessionManager {
         }
         return {
             type: 'base64',
-            size: `${Math.round(imageDataOrUri.length * 3 / 4 / 1024)} KB`
+            size: `${Math.round(imageDataOrUri.length * 3 / 4 / 1024)} KB`,
         };
     }
 
@@ -1262,11 +1376,15 @@ class Flash25SessionManager {
         if (imageData) {
             userParts.push({
                 inlineData: {
-                    mimeType: "image/jpeg",
-                    data: imageData
-                }
+                    mimeType: 'image/jpeg',
+                    data: imageData,
+                },
             });
-            console.log(`Added image data to Flash 2.5 session (${Math.round(imageData.length * 3 / 4 / 1024)} KB)`);
+            logger.info(
+                `Added image data to Flash 2.5 session (${
+                    Math.round(imageData.length * 3 / 4 / 1024)
+                } KB)`,
+            );
         }
 
         return userParts;
@@ -1280,27 +1398,27 @@ class Flash25SessionManager {
                 supabase,
                 session.userId,
                 session.user.personality?.key || null,
-                session.user.user_info?.user_type === "doctor"
+                session.user.user_info?.user_type === 'doctor',
             );
 
             const dynamicSystemInstruction = SystemInstructionBuilder.buildDynamicInstruction(
                 chatHistory,
                 session.user,
-                supabase
+                supabase,
             );
 
             return {
                 ...this.config,
-                systemInstruction: dynamicSystemInstruction
+                systemInstruction: dynamicSystemInstruction,
             };
         } catch (error) {
-            console.warn(`Failed to get chat history for session:`, error);
+            logger.warn(`Failed to get chat history for session:`, error);
             return this.config;
         }
     }
 
     private async extractTextFromStream(response: any): Promise<string> {
-        let text = "";
+        let text = '';
         for await (const chunk of response as any) {
             if (chunk.text) {
                 text += chunk.text;
@@ -1311,7 +1429,7 @@ class Flash25SessionManager {
 
     private extractResponseParts(response: any): { functionCalls: any[]; textResponse: string } {
         const functionCalls: any[] = [];
-        let textResponse = "";
+        let textResponse = '';
 
         if (response.candidates && response.candidates.length > 0) {
             const candidate = response.candidates[0];
@@ -1335,42 +1453,43 @@ class Flash25SessionManager {
         sessionId: string,
         functionCalls: any[],
         supabase: SupabaseClient,
-        configToUse: any
+        configToUse: any,
     ): Promise<FlashResponse> {
         const handler = new FunctionCallHandler(supabase, session);
         const functionResults = await handler.handleFunctionCalls(functionCalls);
 
         // Handle vision results specially
-        const visionResult = functionResults.find(r => 
-            r.name === "GetVision" && r.result?.success && r.result?.imageData
+        const visionResult = functionResults.find((r) =>
+            r.name === 'GetVision' && r.result?.success && r.result?.imageData
         );
 
         if (visionResult) {
             return await this.analyzeImage(
                 sessionId,
                 visionResult.result.prompt,
-                visionResult.result.imageData
+                visionResult.result.imageData,
             );
         }
 
         session.contents.push({
             role: 'function',
-            parts: functionResults.map(fr => ({
+            parts: functionResults.map((fr) => ({
                 functionResponse: {
                     name: fr.name,
-                    response: fr.result
-                }
-            }))
+                    response: fr.result,
+                },
+            })),
         });
 
         try {
             const followUpResponse = await RetryService.withRetry(
-                () => this.ai.models.generateContent({
-                    model: MODEL_CONFIG.model,
-                    config: configToUse,
-                    contents: session.contents,
-                }),
-                `Flash 2.5 function result processing (session: ${sessionId})`
+                () =>
+                    this.ai.models.generateContent({
+                        model: MODEL_CONFIG.model,
+                        config: configToUse,
+                        contents: session.contents,
+                    }),
+                `Flash 2.5 function result processing (session: ${sessionId})`,
             );
 
             const { textResponse } = this.extractResponseParts(followUpResponse);
@@ -1384,13 +1503,13 @@ class Flash25SessionManager {
                 return {
                     success: true,
                     message: textResponse,
-                    data: functionResults
+                    data: functionResults,
                 };
             }
 
             const fallbackMessage = functionResults
-                .map(r => r.result?.message || "Function executed")
-                .join("; ");
+                .map((r) => r.result?.message || 'Function executed')
+                .join('; ');
 
             session.contents.push({
                 role: 'model',
@@ -1400,15 +1519,17 @@ class Flash25SessionManager {
             return {
                 success: true,
                 message: fallbackMessage,
-                data: functionResults
+                data: functionResults,
             };
-
         } catch (followUpError) {
-            console.error(`Error getting AI response for function results in session ${sessionId}:`, followUpError);
+            logger.error(
+                `Error getting AI response for function results in session ${sessionId}:`,
+                followUpError,
+            );
 
             const fallbackMessage = functionResults
-                .map(r => r.result?.message || "Function executed")
-                .join("; ");
+                .map((r) => r.result?.message || 'Function executed')
+                .join('; ');
 
             session.contents.push({
                 role: 'model',
@@ -1418,7 +1539,7 @@ class Flash25SessionManager {
             return {
                 success: true,
                 message: fallbackMessage,
-                data: functionResults
+                data: functionResults,
             };
         }
     }
@@ -1435,7 +1556,7 @@ export function createFlash25Session(
     sessionId: string,
     userId: string,
     deviceCallbacks?: DeviceOperationCallbacks,
-    user?: any
+    user?: any,
 ): void {
     flash25SessionManager.createSession(sessionId, userId, deviceCallbacks, user);
 }
@@ -1456,7 +1577,7 @@ export function getAllFlash25Sessions(): any[] {
 export async function analyzeImageWithFlash25(
     sessionId: string,
     prompt: string,
-    imageData: string
+    imageData: string,
 ): Promise<FlashResponse> {
     return await flash25SessionManager.analyzeImage(sessionId, prompt, imageData);
 }
@@ -1466,7 +1587,7 @@ export async function processUserActionWithSession(
     userCommand: string,
     supabase: SupabaseClient,
     userId: string,
-    imageData?: string
+    imageData?: string,
 ): Promise<FlashResponse> {
     return await flash25SessionManager.processAction(sessionId, userCommand, supabase, imageData);
 }
@@ -1475,21 +1596,27 @@ export async function processUserActionWithSession(
 export async function processUserAction(
     userCommand: string,
     supabase: SupabaseClient,
-    userId: string
+    userId: string,
 ): Promise<FlashResponse> {
     const tempSessionId = `temp-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
 
     try {
         flash25SessionManager.createSession(tempSessionId, userId);
-        const result = await flash25SessionManager.processAction(tempSessionId, userCommand, supabase);
+        const result = await flash25SessionManager.processAction(
+            tempSessionId,
+            userCommand,
+            supabase,
+        );
         flash25SessionManager.destroySession(tempSessionId);
         return result;
     } catch (error) {
         flash25SessionManager.destroySession(tempSessionId);
-        console.error("Error in legacy processUserAction:", error);
+        logger.error('Error in legacy processUserAction:', error);
         return {
             success: false,
-            message: `Error processing action: ${error instanceof Error ? error.message : String(error)}`
+            message: `Error processing action: ${
+                error instanceof Error ? error.message : String(error)
+            }`,
         };
     }
 }

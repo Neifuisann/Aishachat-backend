@@ -1,9 +1,8 @@
-import { 
-    GoogleGenAI, 
-    HarmBlockThreshold, 
-    HarmCategory
-} from "npm:@google/genai";
-import { apiKeyManager } from "./config.ts";
+import { GoogleGenAI, HarmBlockThreshold, HarmCategory } from 'npm:@google/genai';
+import { apiKeyManager } from './config.ts';
+import { Logger } from './logger.ts';
+
+const logger = new Logger('[GoogleSearch]');
 
 // ============================================================================
 // Type Definitions
@@ -64,13 +63,13 @@ const DEFAULT_RETRY_CONFIG: RetryConfig = {
     baseDelayMs: 1000,
     maxDelayMs: 10000,
     backoffMultiplier: 2,
-    retryableStatusCodes: [500, 502, 503, 504, 429]
+    retryableStatusCodes: [500, 502, 503, 504, 429],
 } as const;
 
 const SEARCH_CONFIG: SearchHandlerConfig = {
     temperature: 0.1,
     model: 'gemini-2.0-flash',
-    responseMimeType: 'text/plain'
+    responseMimeType: 'text/plain',
 } as const;
 
 const RETRYABLE_ERROR_PATTERNS = [
@@ -85,7 +84,7 @@ const RETRYABLE_ERROR_PATTERNS = [
     'server error',
     'connection reset',
     'timeout',
-    'network error'
+    'network error',
 ] as const;
 
 const SAFETY_SETTINGS = [
@@ -119,11 +118,19 @@ function getRetryConfig(): RetryConfig {
     if (!env) return DEFAULT_RETRY_CONFIG;
 
     return {
-        maxRetries: parseInt(env.get("GEMINI_MAX_RETRIES") || String(DEFAULT_RETRY_CONFIG.maxRetries)),
-        baseDelayMs: parseInt(env.get("GEMINI_BASE_DELAY_MS") || String(DEFAULT_RETRY_CONFIG.baseDelayMs)),
-        maxDelayMs: parseInt(env.get("GEMINI_MAX_DELAY_MS") || String(DEFAULT_RETRY_CONFIG.maxDelayMs)),
-        backoffMultiplier: parseFloat(env.get("GEMINI_BACKOFF_MULTIPLIER") || String(DEFAULT_RETRY_CONFIG.backoffMultiplier)),
-        retryableStatusCodes: DEFAULT_RETRY_CONFIG.retryableStatusCodes
+        maxRetries: parseInt(
+            env.get('GEMINI_MAX_RETRIES') || String(DEFAULT_RETRY_CONFIG.maxRetries),
+        ),
+        baseDelayMs: parseInt(
+            env.get('GEMINI_BASE_DELAY_MS') || String(DEFAULT_RETRY_CONFIG.baseDelayMs),
+        ),
+        maxDelayMs: parseInt(
+            env.get('GEMINI_MAX_DELAY_MS') || String(DEFAULT_RETRY_CONFIG.maxDelayMs),
+        ),
+        backoffMultiplier: parseFloat(
+            env.get('GEMINI_BACKOFF_MULTIPLIER') || String(DEFAULT_RETRY_CONFIG.backoffMultiplier),
+        ),
+        retryableStatusCodes: DEFAULT_RETRY_CONFIG.retryableStatusCodes,
     };
 }
 
@@ -142,7 +149,7 @@ class RetryHandler {
      */
     async execute<T>(
         operation: () => Promise<T>,
-        operationName: string
+        operationName: string,
     ): Promise<T> {
         let lastError: unknown;
 
@@ -153,7 +160,7 @@ class RetryHandler {
                 }
 
                 const result = await operation();
-                
+
                 if (attempt > 0) {
                     this.logRetrySuccess(operationName, attempt);
                 }
@@ -161,7 +168,7 @@ class RetryHandler {
                 return result;
             } catch (error) {
                 lastError = error;
-                
+
                 if (!this.shouldRetry(error, attempt)) {
                     break;
                 }
@@ -176,18 +183,23 @@ class RetryHandler {
 
     private async delayBeforeRetry(attempt: number, operationName: string): Promise<void> {
         const delay = this.calculateDelay(attempt - 1);
-        console.log(`Retrying ${operationName} (attempt ${attempt}/${this.config.maxRetries}) after ${Math.round(delay)}ms delay`);
+        logger.info(
+            `Retrying ${operationName} (attempt ${attempt}/${this.config.maxRetries}) after ${
+                Math.round(delay)
+            }ms delay`,
+        );
         await this.sleep(delay);
     }
 
     private calculateDelay(attempt: number): number {
-        const exponentialDelay = this.config.baseDelayMs * Math.pow(this.config.backoffMultiplier, attempt);
+        const exponentialDelay = this.config.baseDelayMs *
+            Math.pow(this.config.backoffMultiplier, attempt);
         const jitter = Math.random() * 0.1 * exponentialDelay;
         return Math.min(exponentialDelay + jitter, this.config.maxDelayMs);
     }
 
     private sleep(ms: number): Promise<void> {
-        return new Promise(resolve => setTimeout(resolve, ms));
+        return new Promise((resolve) => setTimeout(resolve, ms));
     }
 
     private shouldRetry(error: unknown, attempt: number): boolean {
@@ -196,26 +208,32 @@ class RetryHandler {
 
     private isRetryableError(error: unknown): boolean {
         const errorWithStatus = error as ErrorWithStatus;
-        
-        if (errorWithStatus.status && this.config.retryableStatusCodes.includes(errorWithStatus.status)) {
+
+        if (
+            errorWithStatus.status &&
+            this.config.retryableStatusCodes.includes(errorWithStatus.status)
+        ) {
             return true;
         }
 
         const errorMessage = (errorWithStatus.message || '').toLowerCase();
-        return RETRYABLE_ERROR_PATTERNS.some(pattern => errorMessage.includes(pattern));
+        return RETRYABLE_ERROR_PATTERNS.some((pattern) => errorMessage.includes(pattern));
     }
 
     private logRetryError(operationName: string, attempt: number, error: unknown): void {
         const errorInfo = this.extractErrorInfo(error);
-        console.error(`${operationName} failed on attempt ${attempt + 1}:`, errorInfo);
+        logger.error(`${operationName} failed on attempt ${attempt + 1}:`, errorInfo);
     }
 
     private logRetrySuccess(operationName: string, attempt: number): void {
-        console.log(`${operationName} succeeded on attempt ${attempt + 1}`);
+        logger.info(`${operationName} succeeded on attempt ${attempt + 1}`);
     }
 
     private logFinalError(operationName: string, error: unknown): void {
-        console.error(`${operationName} failed after ${this.config.maxRetries + 1} attempts. Final error:`, error);
+        logger.error(
+            `${operationName} failed after ${this.config.maxRetries + 1} attempts. Final error:`,
+            error,
+        );
     }
 
     private extractErrorInfo(error: unknown): Record<string, unknown> {
@@ -223,7 +241,7 @@ class RetryHandler {
         return {
             status: errorWithStatus.status || 'unknown',
             message: errorWithStatus.message || String(error),
-            retryable: this.isRetryableError(error)
+            retryable: this.isRetryableError(error),
         };
     }
 }
@@ -269,7 +287,7 @@ export class GoogleSearchHandler {
 
     constructor(
         private readonly config: SearchHandlerConfig = SEARCH_CONFIG,
-        retryConfig?: RetryConfig
+        retryConfig?: RetryConfig,
     ) {
         this.ai = this.initializeAI();
         this.retryHandler = new RetryHandler(retryConfig);
@@ -284,11 +302,11 @@ export class GoogleSearchHandler {
     async performSearch(query: string, sessionId: string): Promise<GoogleSearchResponse> {
         try {
             this.logSearchStart(query, sessionId);
-            
+
             const searchResult = await this.executeSearch(query, sessionId);
-            
+
             this.logSearchComplete(sessionId, searchResult);
-            
+
             return this.createSuccessResponse(query, searchResult);
         } catch (error) {
             return this.createErrorResponse(query, sessionId, error);
@@ -298,7 +316,7 @@ export class GoogleSearchHandler {
     private initializeAI(): GoogleGenAI {
         const apiKey = apiKeyManager.getCurrentKey();
         if (!apiKey) {
-            throw new Error("API key not available for Google Search");
+            throw new Error('API key not available for Google Search');
         }
         return new GoogleGenAI({ apiKey });
     }
@@ -306,7 +324,7 @@ export class GoogleSearchHandler {
     private async executeSearch(query: string, sessionId: string): Promise<string> {
         const response = await this.retryHandler.execute(
             () => this.callGeminiAPI(query),
-            `Google Search Flash 2.5 (session: ${sessionId})`
+            `Google Search Flash 2.5 (session: ${sessionId})`,
         );
 
         return this.extractSearchResults(response);
@@ -332,7 +350,7 @@ export class GoogleSearchHandler {
     }
 
     private extractSearchResults(response: any): string {
-        let searchResult = "";
+        let searchResult = '';
 
         const candidates = (response as any).candidates;
         if (!candidates || candidates.length === 0) {
@@ -356,40 +374,44 @@ export class GoogleSearchHandler {
     private createSuccessResponse(query: string, searchResult: string): GoogleSearchResponse {
         return {
             success: true,
-            message: searchResult || "Search completed but no results were found.",
+            message: searchResult || 'Search completed but no results were found.',
             data: {
                 query,
                 timestamp: new Date().toISOString(),
-                rawResults: searchResult
-            }
+                rawResults: searchResult,
+            },
         };
     }
 
-    private createErrorResponse(query: string, sessionId: string, error: unknown): GoogleSearchResponse {
-        console.error(`Google Search (session: ${sessionId}) error:`, error);
-        
+    private createErrorResponse(
+        query: string,
+        sessionId: string,
+        error: unknown,
+    ): GoogleSearchResponse {
+        logger.error(`Google Search (session: ${sessionId}) error:`, error);
+
         const errorMessage = error instanceof Error ? error.message : String(error);
-        
+
         return {
             success: false,
             message: `Search failed: ${errorMessage}`,
             data: {
                 query,
                 timestamp: new Date().toISOString(),
-                error: errorMessage
-            }
+                error: errorMessage,
+            },
         };
     }
 
     private logSearchStart(query: string, sessionId: string): void {
-        console.log(`Google Search (session: ${sessionId}): Performing search for "${query}"`);
+        logger.info(`Google Search (session: ${sessionId}): Performing search for "${query}"`);
     }
 
     private logSearchComplete(sessionId: string, searchResult: string): void {
-        console.log(`Google Search (session: ${sessionId}): Search completed successfully`);
-        
+        logger.info(`Google Search (session: ${sessionId}): Search completed successfully`);
+
         const preview = searchResult.substring(0, 200);
-        console.log(`Google Search raw result: ${preview}...`);
+        logger.debug(`Google Search raw result: ${preview}...`);
     }
 }
 
@@ -418,8 +440,8 @@ class GoogleSearchHandlerFactory {
  * @returns Search results
  */
 export async function performGoogleSearch(
-    query: string, 
-    sessionId: string
+    query: string,
+    sessionId: string,
 ): Promise<GoogleSearchResponse> {
     const handler = GoogleSearchHandlerFactory.getInstance();
     return handler.performSearch(query, sessionId);

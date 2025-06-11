@@ -1,14 +1,22 @@
 /**
  * Edge TTS Integration for Deno
- * 
+ *
  * This module provides integration with Microsoft Edge's Text-to-Speech service
  * as a free alternative to paid TTS services. It uses the msedge-tts npm package
  * and provides streaming capabilities for real-time audio processing.
  */
 
-import { MsEdgeTTS, OUTPUT_FORMAT } from "msedge-tts";
-import { TTS_SAMPLE_RATE, EDGE_TTS_DEFAULT_VOICE, EDGE_TTS_DEFAULT_FORMAT, EDGE_TTS_DEFAULT_SPEED } from "./config.ts";
-import { Buffer } from "node:buffer";
+import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts';
+import {
+    EDGE_TTS_DEFAULT_FORMAT,
+    EDGE_TTS_DEFAULT_SPEED,
+    EDGE_TTS_DEFAULT_VOICE,
+    TTS_SAMPLE_RATE,
+} from './config.ts';
+import { Buffer } from 'node:buffer';
+import { Logger } from './logger.ts';
+
+const logger = new Logger('[EdgeTTS]');
 
 export interface EdgeTTSVoiceSettings {
     voice: string;
@@ -37,11 +45,11 @@ export interface EdgeTTSResponse {
 // OpenAI voice names mapped to Edge TTS equivalents (similar to Python version)
 const voiceMapping: Record<string, string> = {
     'alloy': 'vi-VN-HoaiMyNeural',
-    'echo': 'vi-VN-NamMinhNeural', 
+    'echo': 'vi-VN-NamMinhNeural',
     'fable': 'vi-VN-HoaiMyNeural',
     'onyx': 'vi-VN-NamMinhNeural',
     'nova': 'vi-VN-NamMinhNeural',
-    'shimmer': 'vi-VN-HoaiMyNeural'
+    'shimmer': 'vi-VN-HoaiMyNeural',
 };
 
 /**
@@ -50,7 +58,10 @@ const voiceMapping: Record<string, string> = {
  */
 export function prepareTTSInput(text: string): string {
     // Remove emojis (basic implementation)
-    text = text.replace(/[\u{1F600}-\u{1F64F}]|[\u{1F300}-\u{1F5FF}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]/gu, '');
+    text = text.replace(
+        /[\u{1F600}-\u{1F64F}]|[\u{1F300}-\u{1F5FF}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]/gu,
+        '',
+    );
 
     // Add context for headers
     text = text.replace(/^(#{1,6})\s+(.*)$/gm, (match, hashes, headerText) => {
@@ -99,7 +110,7 @@ export function prepareTTSInput(text: string): string {
  */
 function speedToRate(speed: number): string {
     if (speed < 0 || speed > 2) {
-        throw new Error("Speed must be between 0 and 2 (inclusive).");
+        throw new Error('Speed must be between 0 and 2 (inclusive).');
     }
 
     // Convert speed to percentage change
@@ -132,17 +143,21 @@ async function convertMp3ToPcm(mp3Data: Uint8Array): Promise<Uint8Array> {
         await Deno.writeFile(inputPath, mp3Data);
 
         // Use FFmpeg to convert MP3 to raw PCM
-        const command = new Deno.Command("ffmpeg", {
+        const command = new Deno.Command('ffmpeg', {
             args: [
-                "-i", inputPath,           // Input MP3 file
-                "-f", "s16le",             // Output format: 16-bit signed little-endian
-                "-ar", "24000",            // Sample rate: 24kHz to match TTS_SAMPLE_RATE
-                "-ac", "1",                // Channels: mono
-                "-y",                      // Overwrite output file
-                outputPath                 // Output PCM file
+                '-i',
+                inputPath, // Input MP3 file
+                '-f',
+                's16le', // Output format: 16-bit signed little-endian
+                '-ar',
+                '24000', // Sample rate: 24kHz to match TTS_SAMPLE_RATE
+                '-ac',
+                '1', // Channels: mono
+                '-y', // Overwrite output file
+                outputPath, // Output PCM file
             ],
-            stdout: "null",
-            stderr: "null"
+            stdout: 'null',
+            stderr: 'null',
         });
 
         const { code } = await command.output();
@@ -154,13 +169,12 @@ async function convertMp3ToPcm(mp3Data: Uint8Array): Promise<Uint8Array> {
         // Read the converted PCM data
         const pcmData = await Deno.readFile(outputPath);
         return pcmData;
-
     } finally {
         // Clean up temporary files
         try {
             await Deno.remove(tempDir, { recursive: true });
         } catch (error) {
-            console.warn("Failed to clean up temporary files:", error);
+            logger.warn('Failed to clean up temporary files:', error);
         }
     }
 }
@@ -171,52 +185,54 @@ async function convertMp3ToPcm(mp3Data: Uint8Array): Promise<Uint8Array> {
 export async function convertTextToSpeech(
     text: string,
     voiceName: string = EDGE_TTS_DEFAULT_VOICE,
-    options: Partial<EdgeTTSRequest> = {}
+    options: Partial<EdgeTTSRequest> = {},
 ): Promise<EdgeTTSResponse> {
     if (!text.trim()) {
         return {
             success: false,
-            error: "Empty text provided"
+            error: 'Empty text provided',
         };
     }
 
     try {
         // Preprocess text for better TTS
         const processedText = prepareTTSInput(text);
-        
+
         // Get the appropriate Edge TTS voice
         const edgeTTSVoice = getEdgeTTSVoice(voiceName);
-        
+
         // Convert speed to rate format
         const rate = options.rate ? speedToRate(options.rate) : speedToRate(EDGE_TTS_DEFAULT_SPEED);
-        
+
         // Set up TTS instance
         const tts = new MsEdgeTTS();
-        
+
         // Determine output format - use MP3 and convert to PCM for ESP32 compatibility
-        const outputFormat = "AUDIO_24KHZ_96KBITRATE_MONO_MP3" as keyof typeof OUTPUT_FORMAT;
+        const outputFormat = 'AUDIO_24KHZ_96KBITRATE_MONO_MP3' as keyof typeof OUTPUT_FORMAT;
         const format = OUTPUT_FORMAT[outputFormat];
-        
+
         await tts.setMetadata(edgeTTSVoice, format);
-        
-        console.log(`Edge TTS: Converting text (${processedText.length} chars) using voice ${edgeTTSVoice}, format: ${outputFormat}`);
-        
+
+        logger.info(
+            `Edge TTS: Converting text (${processedText.length} chars) using voice ${edgeTTSVoice}, format: ${outputFormat}`,
+        );
+
         // Generate audio to stream
         const { audioStream } = tts.toStream(processedText, {
             rate: options.rate || EDGE_TTS_DEFAULT_SPEED,
-            pitch: options.pitch || "+0Hz",
-            volume: options.volume || "+0%"
+            pitch: options.pitch || '+0Hz',
+            volume: options.volume || '+0%',
         });
 
         // Collect audio data
         const audioChunks: Uint8Array[] = [];
-        
+
         return new Promise((resolve, reject) => {
-            audioStream.on("data", (chunk: Buffer) => {
+            audioStream.on('data', (chunk: Buffer) => {
                 audioChunks.push(new Uint8Array(chunk));
             });
 
-            audioStream.on("end", async () => {
+            audioStream.on('end', async () => {
                 // Combine all chunks
                 const totalLength = audioChunks.reduce((sum, chunk) => sum + chunk.length, 0);
                 const mp3Data = new Uint8Array(totalLength);
@@ -232,31 +248,30 @@ export async function convertTextToSpeech(
                     const pcmData = await convertMp3ToPcm(mp3Data);
                     resolve({
                         success: true,
-                        audioData: pcmData
+                        audioData: pcmData,
                     });
                 } catch (conversionError) {
-                    console.error("MP3 to PCM conversion failed:", conversionError);
+                    logger.error('MP3 to PCM conversion failed:', conversionError);
                     resolve({
                         success: false,
-                        error: `MP3 to PCM conversion failed: ${conversionError}`
+                        error: `MP3 to PCM conversion failed: ${conversionError}`,
                     });
                 }
             });
 
-            audioStream.on("error", (error: Error) => {
-                console.error(`Edge TTS error: ${error.message}`);
+            audioStream.on('error', (error: Error) => {
+                logger.error(`Edge TTS error: ${error.message}`);
                 reject({
                     success: false,
-                    error: `Edge TTS error: ${error.message}`
+                    error: `Edge TTS error: ${error.message}`,
                 });
             });
         });
-
     } catch (error) {
-        console.error(`Edge TTS conversion error: ${error}`);
+        logger.error(`Edge TTS conversion error: ${error}`);
         return {
             success: false,
-            error: `Edge TTS conversion error: ${error}`
+            error: `Edge TTS conversion error: ${error}`,
         };
     }
 }
@@ -268,49 +283,51 @@ export async function convertTextToSpeechStreaming(
     text: string,
     voiceName: string = EDGE_TTS_DEFAULT_VOICE,
     onAudioChunk: (chunk: Uint8Array) => Promise<void>,
-    options: Partial<EdgeTTSRequest> = {}
+    options: Partial<EdgeTTSRequest> = {},
 ): Promise<EdgeTTSResponse> {
     if (!text.trim()) {
         return {
             success: false,
-            error: "Empty text provided"
+            error: 'Empty text provided',
         };
     }
 
     try {
         // Preprocess text for better TTS
         const processedText = prepareTTSInput(text);
-        
+
         // Get the appropriate Edge TTS voice
         const edgeTTSVoice = getEdgeTTSVoice(voiceName);
-        
+
         // Set up TTS instance
         const tts = new MsEdgeTTS();
-        
+
         // Determine output format - use MP3 and convert to PCM for ESP32 compatibility
-        const outputFormat = "AUDIO_24KHZ_96KBITRATE_MONO_MP3" as keyof typeof OUTPUT_FORMAT;
+        const outputFormat = 'AUDIO_24KHZ_96KBITRATE_MONO_MP3' as keyof typeof OUTPUT_FORMAT;
         const format = OUTPUT_FORMAT[outputFormat];
-        
+
         await tts.setMetadata(edgeTTSVoice, format);
-        
-        console.log(`Edge TTS Streaming: Converting text (${processedText.length} chars) using voice ${edgeTTSVoice}, format: ${outputFormat}`);
-        
+
+        logger.info(
+            `Edge TTS Streaming: Converting text (${processedText.length} chars) using voice ${edgeTTSVoice}, format: ${outputFormat}`,
+        );
+
         // Generate audio to stream
         const { audioStream } = tts.toStream(processedText, {
             rate: options.rate || EDGE_TTS_DEFAULT_SPEED,
-            pitch: options.pitch || "+0Hz",
-            volume: options.volume || "+0%"
+            pitch: options.pitch || '+0Hz',
+            volume: options.volume || '+0%',
         });
 
         // For streaming, we need to collect chunks and convert them
         const audioChunks: Uint8Array[] = [];
 
         return new Promise((resolve, reject) => {
-            audioStream.on("data", (chunk: Buffer) => {
+            audioStream.on('data', (chunk: Buffer) => {
                 audioChunks.push(new Uint8Array(chunk));
             });
 
-            audioStream.on("end", async () => {
+            audioStream.on('end', async () => {
                 try {
                     // Combine all MP3 chunks
                     const totalLength = audioChunks.reduce((sum, chunk) => sum + chunk.length, 0);
@@ -333,31 +350,30 @@ export async function convertTextToSpeechStreaming(
                     }
 
                     resolve({
-                        success: true
+                        success: true,
                     });
                 } catch (conversionError) {
-                    console.error("MP3 to PCM conversion failed in streaming:", conversionError);
+                    logger.error('MP3 to PCM conversion failed in streaming:', conversionError);
                     resolve({
                         success: false,
-                        error: `MP3 to PCM conversion failed: ${conversionError}`
+                        error: `MP3 to PCM conversion failed: ${conversionError}`,
                     });
                 }
             });
 
-            audioStream.on("error", (error: Error) => {
-                console.error(`Edge TTS streaming error: ${error.message}`);
+            audioStream.on('error', (error: Error) => {
+                logger.error(`Edge TTS streaming error: ${error.message}`);
                 reject({
                     success: false,
-                    error: `Edge TTS streaming error: ${error.message}`
+                    error: `Edge TTS streaming error: ${error.message}`,
                 });
             });
         });
-
     } catch (error) {
-        console.error(`Edge TTS streaming conversion error: ${error}`);
+        logger.error(`Edge TTS streaming conversion error: ${error}`);
         return {
             success: false,
-            error: `Edge TTS streaming conversion error: ${error}`
+            error: `Edge TTS streaming conversion error: ${error}`,
         };
     }
 }
@@ -390,6 +406,6 @@ export function getAvailableVoices(): string[] {
         'en-AU-NatashaNeural',
         'en-AU-WilliamNeural',
         'vi-VN-NamMinhNeural',
-        'vi-VN-HoaiMyNeural'
+        'vi-VN-HoaiMyNeural',
     ];
 }

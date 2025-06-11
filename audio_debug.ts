@@ -1,17 +1,20 @@
-import { ensureDir } from "https://deno.land/std@0.224.0/fs/mod.ts";
-import { join } from "https://deno.land/std@0.224.0/path/mod.ts";
+import { ensureDir } from 'https://deno.land/std@0.224.0/fs/mod.ts';
+import { join } from 'https://deno.land/std@0.224.0/path/mod.ts';
 import {
     AUDIO_DEBUG,
     AUDIO_DEBUG_DIR,
     AUDIO_DEBUG_MAX_FILES,
-    MIC_SAMPLE_RATE,
+    MIC_CHANNELS,
     MIC_SAMPLE_BITS,
-    MIC_CHANNELS
-} from "./config.ts";
+    MIC_SAMPLE_RATE,
+} from './config.ts';
+import { Logger } from './logger.ts';
+
+const logger = new Logger('[AudioDebug]');
 
 /**
  * Audio Debug System
- * 
+ *
  * This module provides functionality to save voice commands as audio files
  * for testing and debugging the audio pipeline. It supports:
  * - Automatic WAV file creation with proper headers
@@ -39,7 +42,9 @@ class AudioDebugManager {
     constructor() {
         if (this.isEnabled) {
             this.initializeDebugDirectory();
-            console.log(`Audio Debug System initialized: ${this.debugDir} (max ${this.maxFiles} files)`);
+            logger.info(
+                `Audio Debug System initialized: ${this.debugDir} (max ${this.maxFiles} files)`,
+            );
         }
     }
 
@@ -50,7 +55,7 @@ class AudioDebugManager {
         try {
             await ensureDir(this.debugDir);
         } catch (error) {
-            console.error("Failed to create audio debug directory:", error);
+            logger.error('Failed to create audio debug directory:', error);
             this.isEnabled = false;
         }
     }
@@ -67,11 +72,11 @@ class AudioDebugManager {
             audioBuffer: [],
             totalBytes: 0,
             lastSaveTime: Date.now(),
-            chunkCount: 0
+            chunkCount: 0,
         };
 
         this.sessions.set(sessionId, session);
-        console.log(`Audio debug session started: ${sessionId}`);
+        logger.info(`Audio debug session started: ${sessionId}`);
     }
 
     /**
@@ -103,8 +108,8 @@ class AudioDebugManager {
         const shouldAutoSave = timeSinceLastSave > 30000 || session.chunkCount % 100 === 0;
 
         if (shouldAutoSave && session.chunkCount > 0) {
-            this.autoSaveSession(sessionId).catch(err =>
-                console.error(`Auto-save failed for session ${sessionId}:`, err)
+            this.autoSaveSession(sessionId).catch((err) =>
+                logger.error(`Auto-save failed for session ${sessionId}:`, err)
             );
         }
     }
@@ -120,7 +125,9 @@ class AudioDebugManager {
             // Create a partial save with current data
             const duration = Date.now() - session.startTime.getTime();
             const timestamp = session.startTime.toISOString().replace(/[:.]/g, '-');
-            const filename = `voice_${timestamp}_autosave_${duration}ms_${sessionId.substring(0, 8)}.wav`;
+            const filename = `voice_${timestamp}_autosave_${duration}ms_${
+                sessionId.substring(0, 8)
+            }.wav`;
             const filepath = join(this.debugDir, filename);
 
             // Combine current audio buffers
@@ -140,17 +147,20 @@ class AudioDebugManager {
             // Update last save time
             session.lastSaveTime = Date.now();
 
-            console.log(`Audio Debug: Auto-saved session ${sessionId.substring(0, 8)} (${session.chunkCount} chunks, ${(session.totalBytes / 1024).toFixed(1)} KB)`);
-
+            logger.info(
+                `Audio Debug: Auto-saved session ${
+                    sessionId.substring(0, 8)
+                } (${session.chunkCount} chunks, ${(session.totalBytes / 1024).toFixed(1)} KB)`,
+            );
         } catch (error) {
-            console.error(`Auto-save failed for session ${sessionId}:`, error);
+            logger.error(`Auto-save failed for session ${sessionId}:`, error);
         }
     }
 
     /**
      * End a debug session and save the audio file
      */
-    public async endSession(sessionId: string, reason: string = "session_ended"): Promise<void> {
+    public async endSession(sessionId: string, reason: string = 'session_ended'): Promise<void> {
         if (!this.isEnabled) return;
 
         const session = this.sessions.get(sessionId);
@@ -159,17 +169,19 @@ class AudioDebugManager {
         try {
             // Calculate session duration
             const duration = Date.now() - session.startTime.getTime();
-            
+
             // Create filename with timestamp and session info
             const timestamp = session.startTime.toISOString().replace(/[:.]/g, '-');
-            const filename = `voice_${timestamp}_${reason}_${duration}ms_${sessionId.substring(0, 8)}.wav`;
+            const filename = `voice_${timestamp}_${reason}_${duration}ms_${
+                sessionId.substring(0, 8)
+            }.wav`;
             const filepath = join(this.debugDir, filename);
 
             // Combine all audio buffers
             const totalLength = session.audioBuffer.reduce((sum, buffer) => sum + buffer.length, 0);
             const combinedAudio = new Uint8Array(totalLength);
             let offset = 0;
-            
+
             for (const buffer of session.audioBuffer) {
                 combinedAudio.set(buffer, offset);
                 offset += buffer.length;
@@ -184,9 +196,8 @@ class AudioDebugManager {
 
             // Clean up old files if necessary
             await this.cleanupOldFiles();
-
         } catch (error) {
-            console.error(`Failed to save audio debug file for session ${sessionId}:`, error);
+            logger.error(`Failed to save audio debug file for session ${sessionId}:`, error);
         } finally {
             // Remove session from memory
             this.sessions.delete(sessionId);
@@ -210,22 +221,22 @@ class AudioDebugManager {
 
         // RIFF header
         view.setUint32(0, 0x52494646, false); // "RIFF"
-        view.setUint32(4, fileSize, true);    // File size
+        view.setUint32(4, fileSize, true); // File size
         view.setUint32(8, 0x57415645, false); // "WAVE"
 
         // fmt chunk
         view.setUint32(12, 0x666d7420, false); // "fmt "
-        view.setUint32(16, 16, true);          // Chunk size
-        view.setUint16(20, 1, true);           // Audio format (PCM)
-        view.setUint16(22, channels, true);    // Number of channels
-        view.setUint32(24, sampleRate, true);  // Sample rate
-        view.setUint32(28, byteRate, true);    // Byte rate
-        view.setUint16(32, blockAlign, true);  // Block align
+        view.setUint32(16, 16, true); // Chunk size
+        view.setUint16(20, 1, true); // Audio format (PCM)
+        view.setUint16(22, channels, true); // Number of channels
+        view.setUint32(24, sampleRate, true); // Sample rate
+        view.setUint32(28, byteRate, true); // Byte rate
+        view.setUint16(32, blockAlign, true); // Block align
         view.setUint16(34, bitsPerSample, true); // Bits per sample
 
         // data chunk
         view.setUint32(36, 0x64617461, false); // "data"
-        view.setUint32(40, dataSize, true);    // Data size
+        view.setUint32(40, dataSize, true); // Data size
 
         // Combine header and data
         const wavFile = new Uint8Array(44 + dataSize);
@@ -245,32 +256,40 @@ class AudioDebugManager {
         const kbps = (bytesPerSecond * 8) / 1000;
 
         let logMessage = `Audio Debug [${session.sessionId.substring(0, 8)}]: ` +
-                        `${session.totalBytes} bytes, ${kbps.toFixed(1)} kbps`;
+            `${session.totalBytes} bytes, ${kbps.toFixed(1)} kbps`;
 
         if (session.compressionRatio) {
             const originalSize = session.totalBytes * session.compressionRatio;
             const savedBytes = originalSize - session.totalBytes;
             const savedPercentage = (savedBytes / originalSize) * 100;
             logMessage += `, compression: ${session.compressionRatio.toFixed(1)}x ` +
-                         `(saved ${savedPercentage.toFixed(1)}%)`;
+                `(saved ${savedPercentage.toFixed(1)}%)`;
         }
 
-        console.log(logMessage);
+        logger.info(logMessage);
     }
 
     /**
      * Log session summary when ending
      */
-    private logSessionSummary(session: AudioDebugSession, filename: string, duration: number): void {
+    private logSessionSummary(
+        session: AudioDebugSession,
+        filename: string,
+        duration: number,
+    ): void {
         const sizeKB = (session.totalBytes / 1024).toFixed(1);
         const durationSec = (duration / 1000).toFixed(1);
 
-        console.log(`Audio Debug Session Complete:
+        logger.info(`Audio Debug Session Complete:
   File: ${filename}
   Duration: ${durationSec}s
   Size: ${sizeKB} KB (${session.totalBytes} bytes)
   Chunks: ${session.chunkCount}
-  ${session.compressionRatio ? `Compression: ${session.compressionRatio.toFixed(1)}x` : 'No compression'}`);
+  ${
+            session.compressionRatio
+                ? `Compression: ${session.compressionRatio.toFixed(1)}x`
+                : 'No compression'
+        }`);
     }
 
     /**
@@ -279,7 +298,7 @@ class AudioDebugManager {
     private async cleanupOldFiles(): Promise<void> {
         try {
             const files: { name: string; mtime: Date }[] = [];
-            
+
             for await (const entry of Deno.readDir(this.debugDir)) {
                 if (entry.isFile && entry.name.endsWith('.wav')) {
                     const filepath = join(this.debugDir, entry.name);
@@ -297,30 +316,35 @@ class AudioDebugManager {
                 for (let i = 0; i < filesToRemove; i++) {
                     const filepath = join(this.debugDir, files[i].name);
                     await Deno.remove(filepath);
-                    console.log(`Audio Debug: Removed old file ${files[i].name}`);
+                    logger.info(`Audio Debug: Removed old file ${files[i].name}`);
                 }
             }
         } catch (error) {
-            console.error("Failed to cleanup old audio debug files:", error);
+            logger.error('Failed to cleanup old audio debug files:', error);
         }
     }
 
     /**
      * Get current debug status
      */
-    public getStatus(): { enabled: boolean; activeSessions: number; directory: string; maxFiles: number } {
+    public getStatus(): {
+        enabled: boolean;
+        activeSessions: number;
+        directory: string;
+        maxFiles: number;
+    } {
         return {
             enabled: this.isEnabled,
             activeSessions: this.sessions.size,
             directory: this.debugDir,
-            maxFiles: this.maxFiles
+            maxFiles: this.maxFiles,
         };
     }
 
     /**
      * Force end all active sessions (for cleanup)
      */
-    public async endAllSessions(reason: string = "server_shutdown"): Promise<void> {
+    public async endAllSessions(reason: string = 'server_shutdown'): Promise<void> {
         const sessionIds = Array.from(this.sessions.keys());
         for (const sessionId of sessionIds) {
             await this.endSession(sessionId, reason);

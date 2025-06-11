@@ -1,17 +1,20 @@
 /**
  * OpenAI Text-to-Speech Integration
- * 
+ *
  * This module provides integration with OpenAI TTS API as an alternative
  * to Gemini's built-in audio responses. When enabled, text responses from
  * Gemini are sent to OpenAI for high-quality speech synthesis.
  */
 
-import { OPENAI_API_KEY, TTS_SAMPLE_RATE } from "./config.ts";
+import { OPENAI_API_KEY, TTS_SAMPLE_RATE } from './config.ts';
+import { Logger } from './logger.ts';
+
+const logger = new Logger('[OpenAITTS]');
 
 export interface OpenAIVoiceSettings {
-    voice: "alloy" | "echo" | "fable" | "onyx" | "nova" | "shimmer";
-    model: "tts-1" | "tts-1-hd";
-    response_format?: "mp3" | "opus" | "aac" | "flac" | "wav" | "pcm";
+    voice: 'alloy' | 'echo' | 'fable' | 'onyx' | 'nova' | 'shimmer';
+    model: 'tts-1' | 'tts-1-hd';
+    response_format?: 'mp3' | 'opus' | 'aac' | 'flac' | 'wav' | 'pcm';
     speed?: number; // 0.25 to 4.0
 }
 
@@ -31,10 +34,10 @@ export interface OpenAITTSResponse {
 
 // Default voice settings optimized for quality and compatibility
 const DEFAULT_VOICE_SETTINGS: OpenAIVoiceSettings = {
-    voice: "alloy",
-    model: "tts-1",
-    response_format: "pcm",
-    speed: 1.0
+    voice: 'alloy',
+    model: 'tts-1',
+    response_format: 'pcm',
+    speed: 1.0,
 };
 
 /**
@@ -45,33 +48,36 @@ const DEFAULT_VOICE_SETTINGS: OpenAIVoiceSettings = {
  */
 export async function convertTextToSpeech(
     text: string,
-    options: Partial<OpenAIVoiceSettings> = {}
+    options: Partial<OpenAIVoiceSettings> = {},
 ): Promise<OpenAITTSResponse> {
     if (!OPENAI_API_KEY) {
         return {
             success: false,
-            error: "OpenAI API key not configured"
+            error: 'OpenAI API key not configured',
         };
     }
 
     if (!text.trim()) {
         return {
             success: false,
-            error: "Empty text provided"
+            error: 'Empty text provided',
         };
     }
 
     try {
         const settings = { ...DEFAULT_VOICE_SETTINGS, ...options };
-        
+
         // Determine response format based on TTS_SAMPLE_RATE
-        let responseFormat = "pcm"; // Default to PCM for compatibility
-        
+        let responseFormat = 'pcm'; // Default to PCM for compatibility
+
         const sampleRate = TTS_SAMPLE_RATE as number;
-        if (sampleRate === 16000 || sampleRate === 22050 || sampleRate === 24000 || sampleRate === 44100) {
-            responseFormat = "pcm";
+        if (
+            sampleRate === 16000 || sampleRate === 22050 || sampleRate === 24000 ||
+            sampleRate === 44100
+        ) {
+            responseFormat = 'pcm';
         } else {
-            responseFormat = "wav"; // Fallback to WAV for other sample rates
+            responseFormat = 'wav'; // Fallback to WAV for other sample rates
         }
 
         const requestBody: OpenAITTSRequest = {
@@ -79,26 +85,28 @@ export async function convertTextToSpeech(
             input: text,
             voice: settings.voice,
             response_format: responseFormat,
-            speed: settings.speed
+            speed: settings.speed,
         };
 
-        console.log(`OpenAI TTS: Converting text (${text.length} chars) using voice ${settings.voice}, model: ${settings.model}, format: ${responseFormat}`);
+        logger.info(
+            `OpenAI TTS: Converting text (${text.length} chars) using voice ${settings.voice}, model: ${settings.model}, format: ${responseFormat}`,
+        );
 
-        const response = await fetch("https://api.openai.com/v1/audio/speech", {
-            method: "POST",
+        const response = await fetch('https://api.openai.com/v1/audio/speech', {
+            method: 'POST',
             headers: {
-                "Authorization": `Bearer ${OPENAI_API_KEY}`,
-                "Content-Type": "application/json"
+                'Authorization': `Bearer ${OPENAI_API_KEY}`,
+                'Content-Type': 'application/json',
             },
-            body: JSON.stringify(requestBody)
+            body: JSON.stringify(requestBody),
         });
 
         if (!response.ok) {
             const errorText = await response.text();
-            console.error(`OpenAI TTS API error: ${response.status} - ${errorText}`);
+            logger.error(`OpenAI TTS API error: ${response.status} - ${errorText}`);
             return {
                 success: false,
-                error: `OpenAI API error: ${response.status} - ${errorText}`
+                error: `OpenAI API error: ${response.status} - ${errorText}`,
             };
         }
 
@@ -106,18 +114,21 @@ export async function convertTextToSpeech(
         const audioBuffer = await response.arrayBuffer();
         const audioData = new Uint8Array(audioBuffer);
 
-        console.log(`OpenAI TTS: Successfully converted text to ${audioData.length} bytes of audio`);
+        logger.info(
+            `OpenAI TTS: Successfully converted text to ${audioData.length} bytes of audio`,
+        );
 
         return {
             success: true,
-            audio: audioData
+            audio: audioData,
         };
-
     } catch (error) {
-        console.error("OpenAI TTS error:", error);
+        logger.error('OpenAI TTS error:', error);
         return {
             success: false,
-            error: `Network or processing error: ${error instanceof Error ? error.message : String(error)}`
+            error: `Network or processing error: ${
+                error instanceof Error ? error.message : String(error)
+            }`,
         };
     }
 }
@@ -132,33 +143,36 @@ export async function convertTextToSpeech(
 export async function convertTextToSpeechStreaming(
     text: string,
     onAudioChunk: (chunk: Uint8Array) => Promise<void>,
-    options: Partial<OpenAIVoiceSettings> = {}
+    options: Partial<OpenAIVoiceSettings> = {},
 ): Promise<OpenAITTSResponse> {
     if (!OPENAI_API_KEY) {
         return {
             success: false,
-            error: "OpenAI API key not configured"
+            error: 'OpenAI API key not configured',
         };
     }
 
     if (!text.trim()) {
         return {
             success: false,
-            error: "Empty text provided"
+            error: 'Empty text provided',
         };
     }
 
     try {
         const settings = { ...DEFAULT_VOICE_SETTINGS, ...options };
-        
+
         // Determine response format based on TTS_SAMPLE_RATE
-        let responseFormat = "pcm";
-        
+        let responseFormat = 'pcm';
+
         const sampleRate = TTS_SAMPLE_RATE as number;
-        if (sampleRate === 16000 || sampleRate === 22050 || sampleRate === 24000 || sampleRate === 44100) {
-            responseFormat = "pcm";
+        if (
+            sampleRate === 16000 || sampleRate === 22050 || sampleRate === 24000 ||
+            sampleRate === 44100
+        ) {
+            responseFormat = 'pcm';
         } else {
-            responseFormat = "wav";
+            responseFormat = 'wav';
         }
 
         const requestBody: OpenAITTSRequest = {
@@ -166,26 +180,28 @@ export async function convertTextToSpeechStreaming(
             input: text,
             voice: settings.voice,
             response_format: responseFormat,
-            speed: settings.speed
+            speed: settings.speed,
         };
 
-        console.log(`OpenAI TTS Streaming: Converting text (${text.length} chars) using voice ${settings.voice}, format: ${responseFormat}`);
+        logger.info(
+            `OpenAI TTS Streaming: Converting text (${text.length} chars) using voice ${settings.voice}, format: ${responseFormat}`,
+        );
 
-        const response = await fetch("https://nekoapi.com/v1/audio/speech", {
-            method: "POST",
+        const response = await fetch('https://nekoapi.com/v1/audio/speech', {
+            method: 'POST',
             headers: {
-                "Authorization": `Bearer ${OPENAI_API_KEY}`,
-                "Content-Type": "application/json"
+                'Authorization': `Bearer ${OPENAI_API_KEY}`,
+                'Content-Type': 'application/json',
             },
-            body: JSON.stringify(requestBody)
+            body: JSON.stringify(requestBody),
         });
 
         if (!response.ok) {
             const errorText = await response.text();
-            console.error(`OpenAI TTS API error: ${response.status} - ${errorText}`);
+            logger.error(`OpenAI TTS API error: ${response.status} - ${errorText}`);
             return {
                 success: false,
-                error: `OpenAI API error: ${response.status} - ${errorText}`
+                error: `OpenAI API error: ${response.status} - ${errorText}`,
             };
         }
 
@@ -193,7 +209,9 @@ export async function convertTextToSpeechStreaming(
         const audioBuffer = await response.arrayBuffer();
         const audioData = new Uint8Array(audioBuffer);
 
-        console.log(`OpenAI TTS Streaming: Received ${audioData.length} bytes, chunking for streaming`);
+        logger.debug(
+            `OpenAI TTS Streaming: Received ${audioData.length} bytes, chunking for streaming`,
+        );
 
         // Simulate streaming by chunking the audio data
         const CHUNK_SIZE = 4096; // 4KB chunks for smooth streaming
@@ -214,30 +232,33 @@ export async function convertTextToSpeechStreaming(
 
                     // Small delay to simulate streaming and prevent overwhelming the audio pipeline
                     if (offset + CHUNK_SIZE < audioData.length) {
-                        await new Promise(resolve => setTimeout(resolve, 10)); // 10ms delay between chunks
+                        await new Promise((resolve) => setTimeout(resolve, 10)); // 10ms delay between chunks
                     }
                 }
             }
         } catch (error) {
-            console.error("Error during OpenAI TTS streaming:", error);
+            logger.error('Error during OpenAI TTS streaming:', error);
             return {
                 success: false,
-                error: `Streaming error: ${error instanceof Error ? error.message : String(error)}`
+                error: `Streaming error: ${error instanceof Error ? error.message : String(error)}`,
             };
         }
 
-        console.log(`OpenAI TTS Streaming: Successfully processed ${chunkCount} chunks, ${totalBytes} total bytes`);
+        logger.info(
+            `OpenAI TTS Streaming: Successfully processed ${chunkCount} chunks, ${totalBytes} total bytes`,
+        );
 
         return {
             success: true,
-            audio: new Uint8Array(0) // No need to return audio data since it's streamed
+            audio: new Uint8Array(0), // No need to return audio data since it's streamed
         };
-
     } catch (error) {
-        console.error("OpenAI TTS streaming error:", error);
+        logger.error('OpenAI TTS streaming error:', error);
         return {
             success: false,
-            error: `Network or processing error: ${error instanceof Error ? error.message : String(error)}`
+            error: `Network or processing error: ${
+                error instanceof Error ? error.message : String(error)
+            }`,
         };
     }
 }
@@ -247,8 +268,8 @@ export async function convertTextToSpeechStreaming(
  * @returns boolean indicating if OpenAI is properly configured
  */
 export function validateOpenAIConfig(): boolean {
-    if (!OPENAI_API_KEY || OPENAI_API_KEY === "your_openai_api_key_here") {
-        console.error("OpenAI API key not properly configured");
+    if (!OPENAI_API_KEY || OPENAI_API_KEY === 'your_openai_api_key_here') {
+        logger.error('OpenAI API key not properly configured');
         return false;
     }
     return true;
@@ -259,7 +280,7 @@ export function validateOpenAIConfig(): boolean {
  * @returns Array of available voice names
  */
 export function getAvailableVoices(): string[] {
-    return ["alloy", "echo", "fable", "onyx", "nova", "shimmer"];
+    return ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'];
 }
 
 /**
@@ -267,5 +288,5 @@ export function getAvailableVoices(): string[] {
  * @returns Array of available model names
  */
 export function getAvailableModels(): string[] {
-    return ["tts-1", "tts-1-hd"];
+    return ['tts-1', 'tts-1-hd'];
 }

@@ -1,7 +1,10 @@
-import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
-import { GetMemory, UpdateMemory } from "./memory_handler.ts";
-import { AddNote, SearchNotes, UpdateNote, DeleteNote, ListNoteTitles } from "./note_handler.ts";
-import "./types.d.ts";
+import type { SupabaseClient } from 'jsr:@supabase/supabase-js@2';
+import { GetMemory, UpdateMemory } from './memory_handler.ts';
+import { AddNote, DeleteNote, ListNoteTitles, SearchNotes, UpdateNote } from './note_handler.ts';
+import './types.d.ts';
+import { Logger } from './logger.ts';
+
+const logger = new Logger('[DataMgr]');
 
 /**
  * Unified data management function that handles both persona and notes management
@@ -24,8 +27,8 @@ import "./types.d.ts";
 export async function ManageData(
     supabase: SupabaseClient,
     userId: string,
-    mode: "Persona" | "Notes",
-    action: "List" | "Search" | "Edit" | "Delete",
+    mode: 'Persona' | 'Notes',
+    action: 'List' | 'Search' | 'Edit' | 'Delete',
     query?: string | null,
     noteId?: string | null,
     title?: string | null,
@@ -33,111 +36,120 @@ export async function ManageData(
     newPersona?: string | null,
     dateFrom?: string | null,
     dateTo?: string | null,
-    imageId?: string | null
+    imageId?: string | null,
 ): Promise<{ success: boolean; data?: any; message: string }> {
-    console.log(`ManageData called: mode=${mode}, action=${action}, userId=${userId}`);
+    logger.info(`ManageData called: mode=${mode}, action=${action}, userId=${userId}`);
 
     // Validate mode and action
-    if (!["Persona", "Notes"].includes(mode)) {
+    if (!['Persona', 'Notes'].includes(mode)) {
         return { success: false, message: "Invalid mode. Must be 'Persona' or 'Notes'." };
     }
-    if (!["List", "Search", "Edit", "Delete"].includes(action)) {
-        return { success: false, message: "Invalid action. Must be 'List', 'Search', 'Edit', or 'Delete'." };
+    if (!['List', 'Search', 'Edit', 'Delete'].includes(action)) {
+        return {
+            success: false,
+            message: "Invalid action. Must be 'List', 'Search', 'Edit', or 'Delete'.",
+        };
     }
 
     try {
         // Handle Persona mode
-        if (mode === "Persona") {
-            if (action === "Search") {
+        if (mode === 'Persona') {
+            if (action === 'Search') {
                 // Get current persona (like GetMemory)
                 const result = await GetMemory(supabase, userId);
                 return {
                     success: result.success,
                     data: result.persona,
                     message: result.success
-                        ? `Current persona: ${result.persona || "(No persona set)"}`
-                        : result.message
+                        ? `Current persona: ${result.persona || '(No persona set)'}`
+                        : result.message,
                 };
-            } else if (action === "Edit") {
+            } else if (action === 'Edit') {
                 // Update persona (like UpdateMemory)
                 if (!newPersona || typeof newPersona !== 'string') {
-                    return { success: false, message: "newPersona is required for Persona Edit." };
+                    return { success: false, message: 'newPersona is required for Persona Edit.' };
                 }
                 const result = await UpdateMemory(supabase, userId, newPersona);
                 return {
                     success: result.success,
-                    message: result.message
+                    message: result.message,
                 };
-            } else if (action === "Delete") {
+            } else if (action === 'Delete') {
                 // Clear persona (set to empty string)
-                const result = await UpdateMemory(supabase, userId, "");
+                const result = await UpdateMemory(supabase, userId, '');
                 return {
                     success: result.success,
-                    message: result.success ? "Persona cleared successfully." : result.message
+                    message: result.success ? 'Persona cleared successfully.' : result.message,
                 };
             }
-        }
-
-        // Handle Notes mode
-        else if (mode === "Notes") {
-            if (action === "List") {
+        } // Handle Notes mode
+        else if (mode === 'Notes') {
+            if (action === 'List') {
                 // List note titles (like ListNoteTitles)
                 const result = await ListNoteTitles(supabase, userId);
                 return {
                     success: result.success,
                     data: result.data,
-                    message: result.message
+                    message: result.message,
                 };
-            } else if (action === "Search") {
+            } else if (action === 'Search') {
                 // Search notes (like SearchNotes)
                 if (!query || typeof query !== 'string' || !query.trim()) {
-                    return { success: false, message: "query is required for Notes Search." };
+                    return { success: false, message: 'query is required for Notes Search.' };
                 }
                 const result = await SearchNotes(supabase, userId, query, dateFrom, dateTo);
                 return {
                     success: result.success,
                     data: result.notes,
-                    message: result.message
+                    message: result.message,
                 };
-            } else if (action === "Edit") {
+            } else if (action === 'Edit') {
                 if (noteId && typeof noteId === 'string' && noteId.trim()) {
                     // Update existing note (like UpdateNote)
                     const result = await UpdateNote(supabase, userId, noteId, title, body);
                     return {
                         success: result.success,
                         data: result.note,
-                        message: result.message
+                        message: result.message,
                     };
                 } else {
                     // Add new note (like AddNote)
                     if (!body || typeof body !== 'string' || !body.trim()) {
-                        return { success: false, message: "body is required for adding a new note." };
+                        return {
+                            success: false,
+                            message: 'body is required for adding a new note.',
+                        };
                     }
-                    const result = await AddNote(supabase, userId, title || null, body, imageId || null);
+                    const result = await AddNote(
+                        supabase,
+                        userId,
+                        title || null,
+                        body,
+                        imageId || null,
+                    );
                     return {
                         success: result.success,
                         data: result.note,
-                        message: result.message
+                        message: result.message,
                     };
                 }
-            } else if (action === "Delete") {
+            } else if (action === 'Delete') {
                 // Delete note (like DeleteNote)
                 if (!noteId || typeof noteId !== 'string' || !noteId.trim()) {
-                    return { success: false, message: "noteId is required for Notes Delete." };
+                    return { success: false, message: 'noteId is required for Notes Delete.' };
                 }
                 const result = await DeleteNote(supabase, userId, noteId);
                 return {
                     success: result.success,
-                    message: result.message
+                    message: result.message,
                 };
             }
         }
 
         // This should never be reached due to validation above
-        return { success: false, message: "Invalid mode/action combination." };
-
+        return { success: false, message: 'Invalid mode/action combination.' };
     } catch (err) {
-        console.error(`Unexpected error in ManageData for user ${userId}:`, err);
+        logger.error(`Unexpected error in ManageData for user ${userId}:`, err);
         const errorMessage = err instanceof Error ? err.message : String(err);
         return { success: false, message: `An unexpected error occurred: ${errorMessage}` };
     }
