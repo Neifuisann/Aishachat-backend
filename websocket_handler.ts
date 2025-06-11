@@ -3,6 +3,7 @@ import { WebSocket as WSWebSocket } from "npm:ws";
 import type { RawData, WebSocketServer as _WSS } from "npm:ws";
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 
+// Import configurations and utilities
 import {
     apiKeyManager,
     GEMINI_LIVE_URL_TEMPLATE,
@@ -12,6 +13,11 @@ import {
     TTS_SAMPLE_RATE,
     ADPCM_ENABLED,
     ADPCM_BUFFER_SIZE,
+    IMAGE_CHUNK_SIZE,
+    IMAGE_CHUNK_TIMEOUT_MS,
+    TTS_PROVIDER,
+    type TTSProvider,
+    USE_FLASH_LIVE_AS_BASE
 } from "./config.ts";
 
 import {
@@ -22,22 +28,25 @@ import {
 
 import { ADPCMStreamProcessor, ADPCM } from "./adpcm.ts";
 import { audioDebugManager } from "./audio_debug.ts";
-
 import { callGeminiVision } from "./vision.ts";
 import { SetVolume } from "./volume_handler.ts";
 import { rotateImage180, isValidJpegBase64 } from "./image_utils.ts";
-import { IMAGE_CHUNK_SIZE, IMAGE_CHUNK_TIMEOUT_MS, TTS_PROVIDER, type TTSProvider } from "./config.ts";
+
+// TTS imports
 import { convertTextToSpeech as convertTextToSpeechElevenLabs, validateElevenLabsConfig } from "./elevenlabs_tts.ts";
 import { convertTextToSpeech as convertTextToSpeechOpenAI, validateOpenAIConfig } from "./openai_tts.ts";
+import { convertTextToSpeech as convertTextToSpeechEdge, validateEdgeTTSConfig } from "./edge_tts.ts";
+
+// Flash handler imports
 import {
     processUserActionWithSession,
     createFlash25Session,
     destroyFlash25Session,
     getFlash25SessionInfo,
-    analyzeImageWithFlash25,
     type DeviceOperationCallbacks
 } from "./flash_handler.ts";
 
+// Supabase imports
 import {
     getChatHistory,
     createFirstMessage,
@@ -47,306 +56,1136 @@ import {
     updateUserSessionTime,
 } from "./supabase.ts";
 
+// ===== Type Definitions =====
 
-// Define a type for the context passed to the connection handler
 interface ConnectionContext {
     user: any; // Consider defining a stricter type for user
     supabase: SupabaseClient;
     timestamp: string;
 }
 
-export function setupWebSocketConnectionHandler(wss: _WSS) {
-    wss.on("connection", async (deviceWs: WSWebSocket, context: ConnectionContext) => {
-        const { user, supabase, timestamp } = context;
-        console.log(`Device WebSocket connected for user: ${user.user_id}`);
-        let geminiWs: WSWebSocket | null = null;
-        let pipelineActive = true;
-        let deviceClosed = false;
-        let isGeminiConnected = false;
-        let sessionStartTime = 0;
-        let retryCount = 0; // Added for retry logic
-        let retryTimeoutId: ReturnType<typeof setTimeout> | null = null; // To store setTimeout ID
-        const maxRetries = 4; // 15s, 30s, 60s, 180s
-        const retryDelays = [15000, 30000, 60000, 180000]; // Delays in ms
+interface ChunkAssembly {
+    chunks: Map<number, string>;
+    totalChunks: number;
+    receivedCount: number;
+    timestamp: number;
+    mime?: string;
+}
 
-        // Create unique session ID for this Live Gemini connection
-        const sessionId = `live-${user.user_id}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+interface PendingVisionCall {
+    prompt: string;
+    id?: string;
+    resolve?: (value: any) => void;
+}
 
-        // Initialize audio debug session
-        audioDebugManager.startSession(sessionId);
+interface ConnectionState {
+    pipelineActive: boolean;
+    deviceClosed: boolean;
+    isGeminiConnected: boolean;
+    sessionStartTime: number;
+    retryCount: number;
+    retryTimeoutId: ReturnType<typeof setTimeout> | null;
+    keepAliveIntervalId: ReturnType<typeof setInterval> | null;
+    sessionId: string;
+}
 
-        // Create device operation callbacks for Flash 2.5
-        const deviceCallbacks: DeviceOperationCallbacks = {
-            requestPhoto: async (callId: string) => {
-                return new Promise((resolve) => {
-                    if (waitingForImage) {
-                        resolve({ success: false, message: "Already waiting for an image. Please try again later." });
-                        return;
-                    }
+interface AudioState {
+    micAccum: Uint8Array;
+    lastCompressionRatio: number | undefined;
+    micFilter: AudioFilter;
+    ttsFilter: AudioFilter;
+    adpcmProcessor: ADPCMStreamProcessor;
+}
 
-                    pendingVisionCall = { prompt: "Flash 2.5 vision request", id: callId };
-                    waitingForImage = true;
+interface TTSState {
+    responseCreatedSent: boolean;
+    ttsTextBuffer: string;
+    ttsTimeout: number | null;
+    toolCallInProgress: boolean;
+}
 
-                    if (deviceWs.readyState === WSWebSocket.OPEN) {
-                        console.log(`Device => Sending REQUEST.PHOTO (triggered by Flash 2.5 GetVision: ${callId})`);
-                        deviceWs.send(JSON.stringify({ type: "server", msg: "REQUEST.PHOTO" }));
+interface ImageCaptureState {
+    pendingVisionCall: PendingVisionCall | null;
+    waitingForImage: boolean;
+    photoCaptureFailed: boolean;
+    imageTimeoutId: ReturnType<typeof setTimeout> | null;
+    imageChunkAssembly: ChunkAssembly | null;
+    chunkTimeoutId: ReturnType<typeof setTimeout> | null;
+}
 
-                        // Store the resolve function to call when photo is received
-                        (pendingVisionCall as any).resolve = resolve;
-                    } else {
-                        console.error("Cannot request photo, device WS is not open.");
-                        waitingForImage = false;
-                        pendingVisionCall = null;
-                        resolve({ success: false, message: "Device connection not available for photo capture." });
-                    }
-                });
-            },
+// ===== Constants =====
 
-            setVolume: async (volumeLevel: number, callId: string) => {
-                console.log(`*SetVolume (ID: ${callId}) called with volume: ${volumeLevel}`);
+const MAX_RETRIES = 4;
+const RETRY_DELAYS = [15000, 30000, 60000, 180000]; // Delays in ms
+const KEEP_ALIVE_INTERVAL = 30000; // 30 seconds
+const IMAGE_CAPTURE_TIMEOUT = 15000; // 15 seconds
+const TTS_DELAY_MS = 100; // Wait 100ms after last generation complete before triggering TTS
 
-                if (typeof volumeLevel !== 'number' || volumeLevel < 0 || volumeLevel > 100) {
-                    return { success: false, message: "Invalid volume level. Must be a number between 0 and 100." };
+// ===== Utility Classes =====
+
+class Logger {
+    private prefix: string;
+
+    constructor(prefix: string) {
+        this.prefix = prefix;
+    }
+
+    log(message: string, ...args: any[]) {
+        console.log(`${this.prefix} ${message}`, ...args);
+    }
+
+    error(message: string, ...args: any[]) {
+        console.error(`${this.prefix} ${message}`, ...args);
+    }
+
+    warn(message: string, ...args: any[]) {
+        console.warn(`${this.prefix} ${message}`, ...args);
+    }
+}
+
+// ===== TTS Manager =====
+
+class TTSManager {
+    private logger = new Logger("[TTS]");
+    private ttsState: TTSState;
+    private deviceWs: WSWebSocket;
+    private user: any;
+
+    constructor(deviceWs: WSWebSocket, user: any, ttsState: TTSState) {
+        this.deviceWs = deviceWs;
+        this.user = user;
+        this.ttsState = ttsState;
+    }
+
+    isExternalTTSEnabled(): boolean {
+        return TTS_PROVIDER !== "GEMINI";
+    }
+
+    async processTextWithTTSStreaming(
+        text: string,
+        onAudioChunk: (chunk: Uint8Array) => Promise<void>
+    ) {
+        switch (TTS_PROVIDER) {
+            case "ELEVEN_LABS":
+                if (!validateElevenLabsConfig()) {
+                    this.logger.error("ElevenLabs TTS is enabled but not properly configured. Falling back to Gemini audio.");
+                    return null;
                 }
+                const elevenLabsVoiceId = this.user.personality?.elevenlabs_voice_id || "21m00Tcm4TlvDq8ikWAM";
+                const { convertTextToSpeechStreaming: convertElevenLabsStreaming } = await import("./elevenlabs_tts.ts");
+                return await convertElevenLabsStreaming(text, elevenLabsVoiceId, onAudioChunk);
 
-                try {
-                    const volumeResult = await SetVolume(supabase, user.user_id, volumeLevel);
-                    console.log(`SetVolume result for ID ${callId}:`, volumeResult);
-                    return volumeResult;
-                } catch (err) {
-                    console.error(`Error executing SetVolume for ID ${callId}:`, err);
-                    return { success: false, message: err instanceof Error ? err.message : String(err) };
+            case "OPENAI":
+                if (!validateOpenAIConfig()) {
+                    this.logger.error("OpenAI TTS is enabled but not properly configured. Falling back to Gemini audio.");
+                    return null;
                 }
+                const openAIVoice = this.user.personality?.openai_voice || "alloy";
+                const { convertTextToSpeechStreaming: convertOpenAIStreaming } = await import("./openai_tts.ts");
+                return await convertOpenAIStreaming(text, onAudioChunk, { voice: openAIVoice });
+
+            case "EDGE_TTS":
+                if (!validateEdgeTTSConfig()) {
+                    this.logger.error("Edge TTS is enabled but not properly configured. Falling back to Gemini audio.");
+                    return null;
+                }
+                const edgeTTSVoice = this.user.personality?.edge_tts_voice || "vi-VN-HoaiMyNeural";
+                const { convertTextToSpeechStreaming: convertEdgeTTSStreaming } = await import("./edge_tts.ts");
+                return await convertEdgeTTSStreaming(text, edgeTTSVoice, onAudioChunk);
+
+            case "GEMINI":
+            default:
+                return null;
+        }
+    }
+
+    async processTTSWithDelay(
+        ttsFilter: AudioFilter,
+        supabase: SupabaseClient,
+        userId: string
+    ) {
+        if (!this.ttsState.ttsTextBuffer.trim()) {
+            this.logger.log("TTS delay timeout reached, but no text to process");
+            return;
+        }
+
+        try {
+            this.logger.log(`${TTS_PROVIDER} TTS: Processing delayed text (${this.ttsState.ttsTextBuffer.length} chars)`);
+
+            // Send RESPONSE.CREATED before starting TTS processing
+            if (!this.ttsState.responseCreatedSent && this.deviceWs.readyState === WSWebSocket.OPEN) {
+                this.ttsState.responseCreatedSent = true;
+                this.deviceWs.send(JSON.stringify({ type: "server", msg: "RESPONSE.CREATED" }));
+                this.logger.log(`Device => Sent RESPONSE.CREATED (${TTS_PROVIDER})`);
             }
-        };
 
-        // Create Flash 2.5 session for persistent context
-        console.log(`Creating Flash 2.5 session: ${sessionId}`);
-        createFlash25Session(sessionId, user.user_id, deviceCallbacks);
-
-        // Microphone data accumulation & filter
-        let micAccum = new Uint8Array(0);
-        let lastCompressionRatio: number | undefined; // Track compression ratio for debug
-        // Use gentler filter settings to avoid audio corruption
-        // Reduced high-pass cutoff and increased low-pass cutoff for better speech preservation
-        const micFilter = new AudioFilter(MIC_SAMPLE_RATE, 300, 3500, MIC_INPUT_GAIN);
-
-        // ADPCM processor for compressed audio from ESP32
-        const adpcmProcessor = new ADPCMStreamProcessor(ADPCM_BUFFER_SIZE);
-
-        // TTS Filter (using the same class, but with TTS sample rate)
-        // Explicitly pass sample rate and default cutoffs (can be changed here)
-        // Lowering LP cutoff to potentially reduce high-frequency buzzing
-        const ttsFilter = new AudioFilter(TTS_SAMPLE_RATE, 300, 4000, 6.0);
-
-        // TTS state
-        let responseCreatedSent = false;
-        let ttsTextBuffer = ""; // Buffer for accumulating text when using external TTS
-        let ttsTimeout: NodeJS.Timeout | null = null; // Timeout for delayed TTS processing
-        const TTS_DELAY_MS = 250; // Wait 250ms after last generation complete before triggering TTS
-
-        // Function to handle delayed TTS processing
-        async function processTTSWithDelay() {
-            if (!ttsTextBuffer.trim()) {
-                console.log("TTS delay timeout reached, but no text to process");
-                return;
-            }
-
-            try {
-                console.log(`${TTS_PROVIDER} TTS: Processing delayed text (${ttsTextBuffer.length} chars)`);
-
-                // Send RESPONSE.CREATED before starting TTS processing
-                if (!responseCreatedSent && deviceWs.readyState === WSWebSocket.OPEN) {
-                    responseCreatedSent = true;
-                    deviceWs.send(JSON.stringify({ type: "server", msg: "RESPONSE.CREATED" }));
-                    console.log(`Device => Sent RESPONSE.CREATED (${TTS_PROVIDER})`);
-                }
-
-                // Use streaming for real-time audio processing
-                const ttsResult = await processTextWithTTSStreaming(ttsTextBuffer.trim(), async (audioChunk: Uint8Array) => {
+            // Use streaming for real-time audio processing
+            const ttsResult = await this.processTextWithTTSStreaming(
+                this.ttsState.ttsTextBuffer.trim(),
+                async (audioChunk: Uint8Array) => {
                     try {
-                        // Process the audio chunk through the same pipeline as Gemini audio
                         const pcmData = Buffer.from(audioChunk);
-
-                        // Apply audio processing
                         ttsFilter.processAudioInPlace(pcmData);
                         boostTtsVolumeInPlace(pcmData, 3.0);
 
-                        // Encode to Opus and send frames immediately
                         const opusFrames = await ttsState.encodePcmChunk(pcmData);
 
                         for (const frame of opusFrames) {
-                            if (deviceWs.readyState === WSWebSocket.OPEN && !deviceClosed) {
-                                deviceWs.send(frame); // Send binary Opus frame immediately
+                            if (this.deviceWs.readyState === WSWebSocket.OPEN) {
+                                this.deviceWs.send(frame);
                             } else {
-                                console.warn("Device WS closed while sending TTS frames. Aborting send.");
+                                this.logger.warn("Device WS closed while sending TTS frames. Aborting send.");
                                 break;
                             }
                         }
                     } catch (error) {
-                        console.error("Error processing TTS audio chunk:", error);
+                        this.logger.error("Error processing TTS audio chunk:", error);
                     }
+                }
+            );
+
+            if (!ttsResult) {
+                this.logger.error(`${TTS_PROVIDER} TTS: Provider not properly configured or failed to initialize`);
+            } else if (!ttsResult.success) {
+                this.logger.error(`${TTS_PROVIDER} TTS failed:`, ttsResult.error);
+            } else {
+                this.logger.log(`${TTS_PROVIDER} TTS streaming completed successfully`);
+            }
+        } catch (error) {
+            this.logger.error(`Error processing ${TTS_PROVIDER} TTS:`, error);
+        }
+
+        // Clear the text buffer and reset state
+        this.ttsState.ttsTextBuffer = "";
+        this.ttsState.ttsTimeout = null;
+
+        // Send RESPONSE.COMPLETE if we actually sent audio
+        if (this.ttsState.responseCreatedSent) {
+            await this.sendResponseComplete(supabase, userId);
+        }
+    }
+
+    private async sendResponseComplete(supabase: SupabaseClient, userId: string) {
+        this.logger.log("Device => Sending RESPONSE.COMPLETE");
+        ttsState.reset();
+        this.ttsState.responseCreatedSent = false;
+        this.ttsState.toolCallInProgress = false;
+
+        try {
+            const devInfo = await getDeviceInfo(supabase, userId).catch(() => null);
+            if (this.deviceWs.readyState === WSWebSocket.OPEN) {
+                this.deviceWs.send(JSON.stringify({
+                    type: "server",
+                    msg: "RESPONSE.COMPLETE",
+                    volume_control: devInfo?.volume ?? 100,
+                    pitch_factor: this.user.personality?.pitch_factor ?? 1,
+                }));
+            }
+        } catch (err) {
+            this.logger.error("Error sending RESPONSE.COMPLETE:", err);
+            if (this.deviceWs.readyState === WSWebSocket.OPEN) {
+                this.deviceWs.send(JSON.stringify({ type: "server", msg: "RESPONSE.COMPLETE" }));
+            }
+        }
+    }
+}
+
+// ===== Image Handler =====
+
+class ImageHandler {
+    private logger = new Logger("[Image]");
+    private supabase: SupabaseClient;
+    private user: any;
+    private imageState: ImageCaptureState;
+
+    constructor(supabase: SupabaseClient, user: any, imageState: ImageCaptureState) {
+        this.supabase = supabase;
+        this.user = user;
+        this.imageState = imageState;
+    }
+
+    async processCompleteImage(base64Jpeg: string, geminiWs: WSWebSocket | null, isGeminiConnected: boolean) {
+        if (!base64Jpeg || typeof base64Jpeg !== 'string') {
+            this.logger.error("Received image data but 'data' field is missing or not a string.");
+            this.handleImageError(geminiWs, isGeminiConnected, "Failed to receive valid image data from device.");
+            return;
+        }
+
+        this.imageState.waitingForImage = false;
+
+        // Clear timeout since we received the image
+        if (this.imageState.imageTimeoutId) {
+            clearTimeout(this.imageState.imageTimeoutId);
+            this.imageState.imageTimeoutId = null;
+        }
+
+        // Rotate image
+        let processedBase64Jpeg = base64Jpeg;
+        try {
+            this.logger.log("Rotating image 180 degrees to correct ESP32 upside-down orientation...");
+            if (isValidJpegBase64(base64Jpeg)) {
+                processedBase64Jpeg = await rotateImage180(base64Jpeg);
+                this.logger.log("Image rotation completed successfully.");
+            } else {
+                this.logger.warn("Invalid JPEG format detected, skipping rotation.");
+            }
+        } catch (rotationErr) {
+            this.logger.error("Error rotating image:", rotationErr);
+            this.logger.warn("Using original image without rotation.");
+            processedBase64Jpeg = base64Jpeg;
+        }
+
+        // Return image data to Flash 2.5's GetVision function via callback
+        if (this.imageState.pendingVisionCall?.resolve) {
+            try {
+                this.logger.log(`Image captured successfully (${Math.round(processedBase64Jpeg.length * 3 / 4 / 1024)} KB), returning to Flash 2.5`);
+                this.imageState.pendingVisionCall.resolve({
+                    success: true,
+                    imageData: processedBase64Jpeg,
+                    message: "Image captured successfully"
+                });
+            } catch (error) {
+                this.logger.error("Error returning image to Flash 2.5:", error);
+                this.imageState.pendingVisionCall.resolve?.({
+                    success: false,
+                    message: "Error processing captured image: " + (error instanceof Error ? error.message : String(error))
+                });
+            }
+        } else {
+            this.logger.error("No pending vision call or resolve function found - image will not be processed");
+        }
+
+        // Upload to Supabase Storage
+        await this.uploadImageToStorage(processedBase64Jpeg);
+
+        // Clear the pending call
+        this.imageState.pendingVisionCall = null;
+    }
+
+    private async uploadImageToStorage(base64Jpeg: string) {
+        try {
+            this.logger.log(`Received image data (${Math.round(base64Jpeg.length * 3 / 4 / 1024)} KB), attempting upload...`);
+            const imageBuffer = Buffer.from(base64Jpeg, 'base64');
+            const fileName = `private/${this.user.user_id}/${Date.now()}.jpg`;
+            const bucketName = 'images';
+
+            const { data: uploadData, error: uploadError } = await this.supabase
+                .storage
+                .from(bucketName)
+                .upload(fileName, imageBuffer, {
+                    contentType: 'image/jpeg',
+                    upsert: true
                 });
 
-                if (!ttsResult) {
-                    console.error(`${TTS_PROVIDER} TTS: Provider not properly configured or failed to initialize`);
-                } else if (!ttsResult.success) {
-                    console.error(`${TTS_PROVIDER} TTS failed:`, ttsResult.error);
-                } else {
-                    console.log(`${TTS_PROVIDER} TTS streaming completed successfully`);
-                }
-
-            } catch (error) {
-                console.error(`Error processing ${TTS_PROVIDER} TTS:`, error);
+            if (uploadError) {
+                this.logger.error(`Supabase Storage Error: Failed to upload image to ${bucketName}/${fileName}`, uploadError);
+                this.imageState.photoCaptureFailed = true;
+            } else if (uploadData) {
+                this.logger.log(`Supabase Storage: Image successfully uploaded to ${bucketName}/${uploadData.path}`);
             }
+        } catch (storageErr) {
+            this.logger.error("Supabase Storage: Unexpected error during upload:", storageErr);
+            this.imageState.photoCaptureFailed = true;
+        }
+    }
 
-            // Clear the text buffer and reset state
-            ttsTextBuffer = "";
-            ttsTimeout = null;
+    private handleImageError(geminiWs: WSWebSocket | null, isGeminiConnected: boolean, errorMessage: string) {
+        this.imageState.waitingForImage = false;
+        this.imageState.photoCaptureFailed = true;
 
-            // Send RESPONSE.COMPLETE if we actually sent audio
-            if (responseCreatedSent) {
-                console.log("Device => Sending RESPONSE.COMPLETE");
-                ttsState.reset(); // Reset Opus buffer
-                responseCreatedSent = false; // Reset flag for next response
-
-                try {
-                    // Fetch latest device info (like volume) before signaling completion
-                    const devInfo = await getDeviceInfo(supabase, user.user_id).catch(() => null); // Handle potential fetch error
-                    if (deviceWs.readyState === WSWebSocket.OPEN) {
-                        deviceWs.send(JSON.stringify({
-                            type: "server",
-                            msg: "RESPONSE.COMPLETE",
-                            volume_control: devInfo?.volume ?? 100, // Send last known or default volume
-                            pitch_factor: user.personality?.pitch_factor ?? 1,
-                        }));
-                    }
-                } catch (err) {
-                    console.error("Error sending RESPONSE.COMPLETE:", err);
-                    // Still try to send basic complete message if fetching device info failed
-                    if (deviceWs.readyState === WSWebSocket.OPEN) {
-                        deviceWs.send(JSON.stringify({ type: "server", msg: "RESPONSE.COMPLETE" }));
-                    }
-                }
+        if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN && this.imageState.pendingVisionCall?.id) {
+            const functionResponsePayload = {
+                functionResponses: [{
+                    id: this.imageState.pendingVisionCall.id,
+                    name: "GetVision",
+                    response: { result: errorMessage }
+                }]
+            };
+            const functionResponse = { toolResponse: functionResponsePayload };
+            try {
+                geminiWs.send(JSON.stringify(functionResponse));
+                this.logger.log("Gemini Live => Sent Function Response (Image Error)");
+            } catch (err) {
+                this.logger.error("Failed to send error function response to Gemini:", err);
             }
         }
+        this.imageState.pendingVisionCall = null;
+    }
 
-        // Unified TTS function to handle multiple providers
-        async function processTextWithTTS(text: string) {
-            switch (TTS_PROVIDER) {
-                case "ELEVEN_LABS":
-                    if (!validateElevenLabsConfig()) {
-                        console.error("ElevenLabs TTS is enabled but not properly configured. Falling back to Gemini audio.");
-                        return null;
-                    }
-                    const elevenLabsVoiceId = user.personality?.elevenlabs_voice_id || "21m00Tcm4TlvDq8ikWAM";
-                    return await convertTextToSpeechElevenLabs(text, elevenLabsVoiceId);
+    handleImageChunk(msgObj: any, geminiWs: WSWebSocket | null, isGeminiConnected: boolean) {
+        this.logger.log(`Received image chunk ${msgObj.chunk_index + 1}/${msgObj.total_chunks}`);
 
-                case "OPENAI":
-                    if (!validateOpenAIConfig()) {
-                        console.error("OpenAI TTS is enabled but not properly configured. Falling back to Gemini audio.");
-                        return null;
-                    }
-                    const openAIVoice = user.personality?.openai_voice || "alloy";
-                    return await convertTextToSpeechOpenAI(text, { voice: openAIVoice });
+        if (!this.imageState.waitingForImage || !this.imageState.pendingVisionCall) {
+            this.logger.warn("Received image chunk but not waiting for image. Ignoring.");
+            return;
+        }
 
-                case "GEMINI":
-                default:
-                    // Gemini handles TTS internally, no external processing needed
-                    return null;
+        // Initialize chunk assembly if this is the first chunk
+        if (!this.imageState.imageChunkAssembly) {
+            this.imageState.imageChunkAssembly = {
+                chunks: new Map(),
+                totalChunks: msgObj.total_chunks,
+                receivedCount: 0,
+                timestamp: Date.now()
+            };
+
+            // Set timeout for chunk assembly
+            this.imageState.chunkTimeoutId = setTimeout(() => {
+                this.logger.error(`Image chunk assembly timeout after ${IMAGE_CHUNK_TIMEOUT_MS}ms. Received ${this.imageState.imageChunkAssembly?.receivedCount}/${this.imageState.imageChunkAssembly?.totalChunks} chunks.`);
+                this.handleChunkTimeout(geminiWs, isGeminiConnected);
+            }, IMAGE_CHUNK_TIMEOUT_MS);
+        }
+
+        // Store the chunk
+        this.imageState.imageChunkAssembly.chunks.set(msgObj.chunk_index, msgObj.data);
+        this.imageState.imageChunkAssembly.receivedCount++;
+
+        this.logger.log(`Stored chunk ${msgObj.chunk_index}, total received: ${this.imageState.imageChunkAssembly.receivedCount}/${this.imageState.imageChunkAssembly.totalChunks}`);
+
+        // Check if we have all chunks
+        if (this.imageState.imageChunkAssembly.receivedCount === this.imageState.imageChunkAssembly.totalChunks) {
+            this.assembleCompleteImage(geminiWs, isGeminiConnected);
+        }
+    }
+
+    private async assembleCompleteImage(geminiWs: WSWebSocket | null, isGeminiConnected: boolean) {
+        this.logger.log("All chunks received, assembling image...");
+
+        // Clear timeout
+        if (this.imageState.chunkTimeoutId) {
+            clearTimeout(this.imageState.chunkTimeoutId);
+            this.imageState.chunkTimeoutId = null;
+        }
+
+        // Assemble the complete base64 image
+        let completeBase64 = "";
+        for (let i = 0; i < this.imageState.imageChunkAssembly!.totalChunks; i++) {
+            const chunk = this.imageState.imageChunkAssembly!.chunks.get(i);
+            if (!chunk) {
+                this.logger.error(`Missing chunk ${i} during assembly!`);
+                this.imageState.imageChunkAssembly = null;
+                this.imageState.waitingForImage = false;
+                this.imageState.pendingVisionCall = null;
+                return;
+            }
+            completeBase64 += chunk;
+        }
+
+        this.logger.log(`Image assembly complete - ${completeBase64.length} characters`);
+
+        // Clean up chunk assembly
+        this.imageState.imageChunkAssembly = null;
+
+        // Process the complete image
+        await this.processCompleteImage(completeBase64, geminiWs, isGeminiConnected);
+    }
+
+    private handleChunkTimeout(geminiWs: WSWebSocket | null, isGeminiConnected: boolean) {
+        this.imageState.imageChunkAssembly = null;
+        this.imageState.waitingForImage = false;
+
+        if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN && this.imageState.pendingVisionCall?.id) {
+            const functionResponsePayload = {
+                functionResponses: [{
+                    id: this.imageState.pendingVisionCall.id,
+                    name: "GetVision",
+                    response: { result: "Image capture failed: Incomplete chunk transmission." }
+                }]
+            };
+            const functionResponse = { toolResponse: functionResponsePayload };
+            try {
+                geminiWs.send(JSON.stringify(functionResponse));
+                this.logger.log("Gemini Live => Sent chunk timeout error response");
+            } catch (err) {
+                this.logger.error("Failed to send chunk timeout error response to Gemini:", err);
             }
         }
 
-        // Streaming TTS function for real-time audio processing
-        async function processTextWithTTSStreaming(text: string, onAudioChunk: (chunk: Uint8Array) => Promise<void>) {
-            switch (TTS_PROVIDER) {
-                case "ELEVEN_LABS":
-                    if (!validateElevenLabsConfig()) {
-                        console.error("ElevenLabs TTS is enabled but not properly configured. Falling back to Gemini audio.");
-                        return null;
-                    }
-                    const elevenLabsVoiceId = user.personality?.elevenlabs_voice_id || "21m00Tcm4TlvDq8ikWAM";
-                    // Import the streaming function
-                    const { convertTextToSpeechStreaming: convertElevenLabsStreaming } = await import("./elevenlabs_tts.ts");
-                    return await convertElevenLabsStreaming(text, elevenLabsVoiceId, onAudioChunk);
+        this.imageState.pendingVisionCall = null;
+        this.imageState.chunkTimeoutId = null;
+    }
+}
 
-                case "OPENAI":
-                    if (!validateOpenAIConfig()) {
-                        console.error("OpenAI TTS is enabled but not properly configured. Falling back to Gemini audio.");
-                        return null;
-                    }
-                    const openAIVoice = user.personality?.openai_voice || "alloy";
-                    // Import the streaming function
-                    const { convertTextToSpeechStreaming: convertOpenAIStreaming } = await import("./openai_tts.ts");
-                    return await convertOpenAIStreaming(text, onAudioChunk, { voice: openAIVoice });
+// ===== Gemini Connection Manager =====
 
-                case "GEMINI":
-                default:
-                    // Gemini handles TTS internally, no external processing needed
-                    return null;
+class GeminiConnectionManager {
+    private logger = new Logger("[Gemini]");
+    private context: ConnectionContext;
+    private connectionState: ConnectionState;
+    private audioState: AudioState;
+    private ttsState: TTSState;
+    private imageState: ImageCaptureState;
+    private deviceWs: WSWebSocket;
+    private geminiWs: WSWebSocket | null = null;
+    private ttsManager: TTSManager;
+    public imageHandler: ImageHandler;
+    public deviceCallbacks: DeviceOperationCallbacks;
+
+    constructor(
+        context: ConnectionContext,
+        deviceWs: WSWebSocket,
+        connectionState: ConnectionState,
+        audioState: AudioState,
+        ttsState: TTSState,
+        imageState: ImageCaptureState
+    ) {
+        this.context = context;
+        this.deviceWs = deviceWs;
+        this.connectionState = connectionState;
+        this.audioState = audioState;
+        this.ttsState = ttsState;
+        this.imageState = imageState;
+        this.ttsManager = new TTSManager(deviceWs, context.user, ttsState);
+        this.imageHandler = new ImageHandler(context.supabase, context.user, imageState);
+
+        // Create device operation callbacks
+        this.deviceCallbacks = {
+            requestPhoto: this.requestPhoto.bind(this),
+            setVolume: this.setVolume.bind(this)
+        };
+    }
+
+    private async requestPhoto(callId: string): Promise<any> {
+        return new Promise((resolve) => {
+            if (this.imageState.waitingForImage) {
+                resolve({ success: false, message: "Already waiting for an image. Please try again later." });
+                return;
             }
-        }
 
-        // Check if external TTS is enabled
-        function isExternalTTSEnabled(): boolean {
-            return TTS_PROVIDER !== "GEMINI";
-        }
+            this.imageState.pendingVisionCall = { prompt: "Flash 2.5 vision request", id: callId, resolve };
+            this.imageState.waitingForImage = true;
 
-        // Vision call state
-        let pendingVisionCall: { prompt: string; id?: string } | null = null;
-        let waitingForImage = false;
-        let photoCaptureFailed = false;
-        let imageTimeoutId: ReturnType<typeof setTimeout> | null = null;
-        const IMAGE_CAPTURE_TIMEOUT = 15000; // 15 seconds timeout for image capture
-
-        // Image chunk reassembly state
-        interface ChunkAssembly {
-            chunks: Map<number, string>;
-            totalChunks: number;
-            receivedCount: number;
-            timestamp: number;
-            mime?: string;
-        }
-        let imageChunkAssembly: ChunkAssembly | null = null;
-        let chunkTimeoutId: ReturnType<typeof setTimeout> | null = null;
-
-        // --- Initial Device Setup & Fetch Volume --- Moved up
-        let currentVolume: number | null = null;
-        let isOta = false;
-        let isReset = false;
-        try {
-            const deviceInfo = await getDeviceInfo(supabase, user.user_id);
-            if (deviceInfo) {
-                currentVolume = deviceInfo.volume ?? 100; // Default to 100 if null/undefined
-                isOta = deviceInfo.is_ota || false;
-                isReset = deviceInfo.is_reset || false;
-                console.log(`Fetched initial device info: Volume=${currentVolume}, OTA=${isOta}, Reset=${isReset}`);
+            if (this.deviceWs.readyState === WSWebSocket.OPEN) {
+                this.logger.log(`Device => Sending REQUEST.PHOTO (triggered by Flash 2.5 GetVision: ${callId})`);
+                this.deviceWs.send(JSON.stringify({ type: "server", msg: "REQUEST.PHOTO" }));
             } else {
-                currentVolume = 100; // Default if no device info found
-                console.warn(`No device info found for user ${user.user_id}, defaulting volume to 100.`);
+                this.logger.error("Cannot request photo, device WS is not open.");
+                this.imageState.waitingForImage = false;
+                this.imageState.pendingVisionCall = null;
+                resolve({ success: false, message: "Device connection not available for photo capture." });
             }
-            deviceWs.send(JSON.stringify({
-                type: "auth",
-                volume_control: currentVolume,
-                pitch_factor: user.personality?.pitch_factor ?? 1,
-                is_ota: isOta,
-                is_reset: isReset,
-            }));
-        } catch (err) {
-            console.error("Failed to get initial device info:", err);
-            currentVolume = 100; // Default on error
-            // Still try to send auth message with defaults
-            deviceWs.send(JSON.stringify({
-                type: "auth",
-                volume_control: 100,
-                pitch_factor: 1,
-                is_ota: false,
-                is_reset: false,
-            }));
+        });
+    }
+
+    private async setVolume(volumeLevel: number, callId: string): Promise<any> {
+        this.logger.log(`*SetVolume (ID: ${callId}) called with volume: ${volumeLevel}`);
+
+        if (typeof volumeLevel !== 'number' || volumeLevel < 0 || volumeLevel > 100) {
+            return { success: false, message: "Invalid volume level. Must be a number between 0 and 100." };
         }
 
+        try {
+            const volumeResult = await SetVolume(this.context.supabase, this.context.user.user_id, volumeLevel);
+            this.logger.log(`SetVolume result for ID ${callId}:`, volumeResult);
+            return volumeResult;
+        } catch (err) {
+            this.logger.error(`Error executing SetVolume for ID ${callId}:`, err);
+            return { success: false, message: err instanceof Error ? err.message : String(err) };
+        }
+    }
 
-        // --- Prepare for Gemini Connection ---
+    async connect(systemPrompt: string, firstMessage: string | null) {
+        const currentKey = apiKeyManager.getCurrentKey();
+        if (!currentKey) {
+            this.logger.error("Cannot connect to Gemini: Missing API Key.");
+            if (this.deviceWs.readyState === WSWebSocket.OPEN) {
+                this.deviceWs.close(1011, "Server Configuration Error: Missing API Key");
+            }
+            return;
+        }
+
+        const voiceName = this.context.user.personality?.oai_voice || "Leda";
+        this.logger.log(`Using TTS voice: ${voiceName}`);
+        this.logger.log(`TTS Provider: ${TTS_PROVIDER}`);
+
+        const gemUrl = GEMINI_LIVE_URL_TEMPLATE.replace("{api_key}", currentKey);
+        this.logger.log("Attempting to connect to Gemini Live");
+
+        this.geminiWs = new WSWebSocket(gemUrl);
+        this.setupGeminiEventHandlers(systemPrompt, firstMessage, voiceName);
+    }
+
+    private setupGeminiEventHandlers(systemPrompt: string, firstMessage: string | null, voiceName: string) {
+        if (!this.geminiWs) return;
+
+        this.geminiWs.on("open", () => {
+            this.handleGeminiOpen(systemPrompt, firstMessage, voiceName);
+        });
+
+        this.geminiWs.on("message", async (data: RawData) => {
+            await this.handleGeminiMessage(data);
+        });
+
+        this.geminiWs.on("close", (code, reason) => {
+            this.handleGeminiClose(code, reason);
+        });
+
+        this.geminiWs.on("error", (err) => {
+            this.handleGeminiError(err);
+        });
+    }
+
+    private handleGeminiOpen(systemPrompt: string, firstMessage: string | null, voiceName: string) {
+        this.connectionState.isGeminiConnected = true;
+        this.connectionState.sessionStartTime = Date.now();
+        this.logger.log("Gemini Live connection established.");
+        this.logger.log(`Flash Live Mode: ${USE_FLASH_LIVE_AS_BASE ? 'Current (Websocket as base)' : 'Legacy (Flash 2.5 API as base)'}`);
+
+        // Start keep-alive timer
+        this.connectionState.keepAliveIntervalId = setInterval(() => this.sendKeepAliveAudioChunk(), KEEP_ALIVE_INTERVAL);
+        this.logger.log(`Started keep-alive timer (${KEEP_ALIVE_INTERVAL / 1000}s interval)`);
+
+        // Configure tools based on mode
+        const tools = this.getToolsConfiguration();
+        const responseModalities = this.ttsManager.isExternalTTSEnabled() ? ["TEXT"] : ["AUDIO"];
+        
+        this.logger.log(`Gemini Live setup: Using ${responseModalities[0]} mode for ${TTS_PROVIDER} TTS`);
+
+        const setupMsg = this.createSetupMessage(systemPrompt, voiceName, tools, responseModalities);
+
+        try {
+            this.geminiWs?.send(JSON.stringify(setupMsg));
+            this.logger.log("Sent Gemini setup message with function calling and audio request.");
+
+            // Send initial turn
+            this.sendInitialTurn(firstMessage);
+        } catch (err) {
+            this.logger.error("Failed to send setup or initial turn to Gemini:", err);
+            if (this.deviceWs.readyState === WSWebSocket.OPEN) {
+                this.deviceWs.close(1011, "Gemini setup failed");
+            }
+        }
+    }
+
+    private getToolsConfiguration() {
+        if (USE_FLASH_LIVE_AS_BASE) {
+            return [{
+                functionDeclarations: [
+                    {
+                        name: "GetVision",
+                        description: "Captures an image using the device's camera and analyzes it with Flash 2.5 intelligence. Use ONLY when user explicitly asks about visual content, images, or what they can see. Very resource intensive - do not use speculatively.",
+                        parameters: {
+                            type: "OBJECT",
+                            properties: {
+                                prompt: {
+                                    type: "STRING",
+                                    description: "The user's exact command in reported speech with no changes. Pass exactly what the user said."
+                                },
+                            },
+                            required: ["prompt"]
+                        },
+                    },
+                    {
+                        name: "Action",
+                        description: "Processes user commands for volume control, notes, schedules, reading books, reminders, and data management and all other tasks that you cant do it yourself.",
+                        parameters: {
+                            type: "OBJECT",
+                            properties: {
+                                userCommand: {
+                                    type: "STRING",
+                                    description: "The user's exact command in reported speech with no changes. Pass exactly what the user said."
+                                },
+                            },
+                            required: ["userCommand"]
+                        },
+                    },
+                ],
+                googleSearch: {}
+            }];
+        } else {
+            return [{
+                functionDeclarations: [
+                    {
+                        name: "transferModal",
+                        description: "Transfers user speech to for processing and tool calling. Use for all user commands.",
+                        parameters: {
+                            type: "OBJECT",
+                            properties: {
+                                userCommand: {
+                                    type: "STRING",
+                                    description: "The user's exact speech converted to text."
+                                },
+                            },
+                            required: ["userCommand"]
+                        },
+                    },
+                ],
+            }];
+        }
+    }
+
+    private createSetupMessage(systemPrompt: string, voiceName: string, tools: any[], responseModalities: string[]) {
+        return {
+            setup: {
+                model: "models/gemini-2.0-flash-live-001",
+                generationConfig: {
+                    responseModalities,
+                    speechConfig: this.ttsManager.isExternalTTSEnabled() ? undefined : {
+                        voiceConfig: {
+                            prebuiltVoiceConfig: {
+                                voiceName,
+                            },
+                        },
+                        language_code: "vi-VN",
+                    },
+                    temperature: 0.0,
+                },
+                systemInstruction: {
+                    role: "system",
+                    parts: [{ text: systemPrompt }]
+                },
+                tools,
+                realtimeInputConfig: {
+                    automaticActivityDetection: {
+                        prefixPaddingMs: 20,
+                        silenceDurationMs: 800,
+                    },
+                    activityHandling: "NO_INTERRUPTION",
+                },
+                contextWindowCompression: {
+                    triggerTokens: 25600,
+                    slidingWindow: { targetTokens: 12800 },
+                },
+            }
+        };
+    }
+
+    private sendInitialTurn(firstMessage: string | null) {
+        if (firstMessage) {
+            this.logger.log("Sending first message as initial turn:", firstMessage);
+            const userTurn = {
+                clientContent: { turns: [{ role: "user", parts: [{ text: firstMessage }] }], turnComplete: true }
+            };
+            this.geminiWs?.send(JSON.stringify(userTurn));
+        } else {
+            this.logger.log("No chat history, sending 'Xin chào' as initial turn.");
+            const userTurn = {
+                clientContent: { turns: [{ role: "user", parts: [{ text: "Xin chào!" }] }], turnComplete: true }
+            };
+            this.geminiWs?.send(JSON.stringify(userTurn));
+        }
+    }
+
+    private async handleGeminiMessage(data: RawData) {
+        if (!this.connectionState.pipelineActive || this.connectionState.deviceClosed || !this.geminiWs || this.geminiWs.readyState !== WSWebSocket.OPEN) {
+            return;
+        }
+
+        try {
+            const msg = JSON.parse(data.toString("utf-8"));
+            await this.processGeminiMessage(msg);
+        } catch (err) {
+            this.logger.warn("Received non-JSON message from Gemini:", data.toString('utf-8'));
+            this.logger.error("Gemini message parse error:", err);
+        }
+    }
+
+    private async processGeminiMessage(msg: any) {
+        if (!this.connectionState.pipelineActive || this.connectionState.deviceClosed) return;
+
+        // Handle setup complete
+        if (msg.setupComplete) {
+            this.logger.log("Setup Complete.");
+            return;
+        }
+
+        // Handle Top-Level Tool Call
+        if (msg.toolCall?.functionCalls && Array.isArray(msg.toolCall.functionCalls)) {
+            await this.handleToolCalls(msg.toolCall.functionCalls);
+            return;
+        }
+
+        // Handle Server Content
+        if (msg.serverContent?.modelTurn?.parts) {
+            await this.handleServerContent(msg.serverContent.modelTurn.parts);
+        }
+
+        // Handle Generation Complete
+        if (msg.serverContent?.generationComplete) {
+            await this.handleGenerationComplete();
+        }
+
+        // Handle Transcriptions
+        await this.handleTranscriptions(msg);
+
+        // Handle GoAway message
+        if (msg.goAway) {
+            this.handleGoAway(msg.goAway);
+        }
+    }
+
+    private async handleToolCalls(functionCalls: any[]) {
+        this.logger.log("Received Top-Level toolCall:", JSON.stringify(functionCalls, null, 2));
+
+        if (this.ttsState.toolCallInProgress) {
+            this.logger.log("Tool call already in progress, ignoring new tool calls until RESPONSE.COMPLETE is sent");
+            return;
+        }
+
+        this.ttsState.toolCallInProgress = true;
+        this.logger.log("Tool call lock acquired for:", functionCalls.map(c => c.name).join(", "));
+
+        for (const call of functionCalls) {
+            if (call.name === "Action" && call.id) {
+                await this.handleActionCall(call);
+            } else if (call.name === "transferModal" && call.id) {
+                await this.handleTransferModalCall(call);
+            } else {
+                this.logger.warn(`Received unhandled top-level function call: ${call.name} or missing ID.`);
+            }
+        }
+    }
+
+    private async handleActionCall(call: any) {
+        const callId = call.id;
+        const userCommand = call.args?.userCommand;
+        this.logger.log(`*Action (ID: ${callId}) called with command: "${userCommand}"`);
+
+        let result = { success: false, message: "Unknown error in Action." };
+
+        if (typeof userCommand === 'string' && userCommand.trim()) {
+            try {
+                result = await processUserActionWithSession(this.connectionState.sessionId, userCommand.trim(), this.context.supabase, this.context.user.user_id);
+                this.logger.log(`Action result for ID ${callId} (session: ${this.connectionState.sessionId}):`, result);
+            } catch (err) {
+                this.logger.error(`Error executing Action for ID ${callId}:`, err);
+                result = { success: false, message: err instanceof Error ? err.message : String(err) };
+            }
+        } else {
+            const errorMsg = `Invalid or missing 'userCommand' argument for Action (ID: ${callId}). Expected a non-empty string.`;
+            this.logger.error(errorMsg);
+            result = { success: false, message: errorMsg };
+        }
+
+        this.sendFunctionResponse(callId, "Action", result.message);
+    }
+
+    private async handleTransferModalCall(call: any) {
+        const callId = call.id;
+        const userCommand = call.args?.userCommand;
+        const searchResults = call.args?.searchResults;
+        this.logger.log(`*transferModal (ID: ${callId})`);
+
+        // Send RESPONSE.CREATED state to device
+        if (this.deviceWs.readyState === WSWebSocket.OPEN) {
+            this.deviceWs.send(JSON.stringify({ type: "server", msg: "RESPONSE.CREATED" }));
+            this.logger.log("Device => Sent SPEAKING state (transferModal triggered)");
+        }
+
+        let result = { success: false, message: "Unknown error in transferModal." };
+
+        if (typeof userCommand === 'string' && userCommand.trim()) {
+            try {
+                let fullCommand = userCommand.trim();
+                if (searchResults && typeof searchResults === 'string' && searchResults.trim()) {
+                    fullCommand = `${userCommand.trim()}\n\nSearch Results: ${searchResults.trim()}`;
+                }
+
+                result = await processUserActionWithSession(this.connectionState.sessionId, fullCommand, this.context.supabase, this.context.user.user_id);
+                this.logger.log(`transferModal result for ID ${callId}`);
+            } catch (err) {
+                this.logger.error(`Error executing transferModal for ID ${callId}:`, err);
+                result = { success: false, message: err instanceof Error ? err.message : String(err) };
+            }
+        } else {
+            const errorMsg = `Invalid or missing 'userCommand' argument for transferModal (ID: ${callId}). Expected a non-empty string.`;
+            this.logger.error(errorMsg);
+            result = { success: false, message: errorMsg };
+        }
+
+        this.sendFunctionResponse(callId, "transferModal", result.message);
+    }
+
+    private sendFunctionResponse(callId: string, functionName: string, result: string) {
+        if (this.connectionState.isGeminiConnected && this.geminiWs?.readyState === WSWebSocket.OPEN) {
+            const functionResponsePayload = {
+                functionResponses: [{
+                    id: callId,
+                    name: functionName,
+                    response: { result }
+                }]
+            };
+            const functionResponse = { toolResponse: functionResponsePayload };
+            try {
+                this.geminiWs.send(JSON.stringify(functionResponse));
+                this.logger.log(`Sent Function Response for ${functionName} (ID: ${callId}):`, JSON.stringify(functionResponsePayload));
+            } catch (err) {
+                this.logger.error(`Failed to send ${functionName} function response (ID: ${callId}) to Gemini:`, err);
+            }
+        } else {
+            this.logger.error(`Cannot send ${functionName} function response (ID: ${callId}), Gemini WS not open.`);
+        }
+    }
+
+    private async handleServerContent(parts: any[]) {
+        const partsToLog = parts.filter((part: any) =>
+            !(part.inlineData && part.inlineData.mimeType === 'audio/pcm;rate=24000')
+        );
+        if (partsToLog.length > 0) {
+            this.logger.log("Received serverContent parts (excluding audio)");
+        }
+
+        for (const part of parts) {
+            if (part.functionCall) {
+                this.logger.warn("Detected functionCall within parts (Ignoring in favor of top-level toolCall):", JSON.stringify(part.functionCall));
+            } else if (part.executableCode && part.executableCode.language === "PYTHON") {
+                this.logger.warn("Detected executableCode within parts (Ignoring in favor of top-level toolCall)");
+            }
+
+            // Check for Text part
+            if (part.text) {
+                this.logger.log("Gemini partial text:", part.text);
+
+                if (this.ttsManager.isExternalTTSEnabled()) {
+                    this.ttsState.ttsTextBuffer += part.text;
+                    this.logger.log(`${TTS_PROVIDER} TTS: Accumulated text (${this.ttsState.ttsTextBuffer.length} chars total)`);
+                }
+            }
+
+            // Check for TTS Audio Data
+            if (part.inlineData?.data) {
+                await this.handleAudioData(part.inlineData.data);
+            }
+        }
+    }
+
+    private async handleAudioData(audioData: string) {
+        // Send RESPONSE.CREATED on the first audio chunk
+        if (!this.ttsState.responseCreatedSent && this.deviceWs.readyState === WSWebSocket.OPEN) {
+            this.ttsState.responseCreatedSent = true;
+            this.deviceWs.send(JSON.stringify({ type: "server", msg: "RESPONSE.CREATED" }));
+            this.logger.log("Device => Sent RESPONSE.CREATED");
+        }
+
+        try {
+            const pcmData = Buffer.from(audioData, "base64");
+            this.audioState.ttsFilter.processAudioInPlace(pcmData);
+            boostTtsVolumeInPlace(pcmData, 3.0);
+            const opusFrames = await ttsState.encodePcmChunk(pcmData);
+
+            for (const frame of opusFrames) {
+                if (this.deviceWs.readyState === WSWebSocket.OPEN && !this.connectionState.deviceClosed) {
+                    this.deviceWs.send(frame);
+                } else {
+                    this.logger.warn("Device WS closed while sending TTS frames. Aborting send.");
+                    break;
+                }
+            }
+        } catch (err) {
+            this.logger.error("Error processing/sending TTS audio chunk:", err);
+        }
+    }
+
+    private async handleGenerationComplete() {
+        this.logger.log("Generation Complete.");
+
+        if (this.ttsState.toolCallInProgress && !this.ttsState.responseCreatedSent) {
+            this.logger.log("Releasing tool call lock - generation complete without audio");
+            this.ttsState.toolCallInProgress = false;
+        }
+
+        // Add a small delay to ensure we've collected all text parts
+        await new Promise(resolve => setTimeout(resolve, 100));
+
+        // If external TTS is enabled and we have accumulated text, set up delayed processing
+        if (this.ttsManager.isExternalTTSEnabled() && this.ttsState.ttsTextBuffer.trim()) {
+            this.logger.log(`${TTS_PROVIDER} TTS: Scheduling delayed processing for accumulated text (${this.ttsState.ttsTextBuffer.length} chars)`);
+
+            if (this.ttsState.ttsTimeout) {
+                clearTimeout(this.ttsState.ttsTimeout);
+            }
+
+            this.ttsState.ttsTimeout = setTimeout(async () => {
+                await this.ttsManager.processTTSWithDelay(this.audioState.ttsFilter, this.context.supabase, this.context.user.user_id);
+            }, TTS_DELAY_MS) as unknown as number;
+
+            this.logger.log(`${TTS_PROVIDER} TTS: Will process in ${TTS_DELAY_MS}ms if no more text arrives`);
+        }
+
+        // Only send RESPONSE.COMPLETE if we actually sent audio
+        if (this.ttsState.responseCreatedSent) {
+            await this.sendResponseComplete();
+        } else {
+            this.logger.log("Generation complete, but no audio was sent (likely function call only or text response). Not sending RESPONSE.COMPLETE.");
+        }
+    }
+
+    private async sendResponseComplete() {
+        this.logger.log("Device => Sending RESPONSE.COMPLETE");
+        ttsState.reset();
+        this.ttsState.responseCreatedSent = false;
+        this.ttsState.toolCallInProgress = false;
+
+        try {
+            const devInfo = await getDeviceInfo(this.context.supabase, this.context.user.user_id).catch(() => null);
+            if (this.deviceWs.readyState === WSWebSocket.OPEN) {
+                this.deviceWs.send(JSON.stringify({
+                    type: "server",
+                    msg: "RESPONSE.COMPLETE",
+                    volume_control: devInfo?.volume ?? 100,
+                    pitch_factor: this.context.user.personality?.pitch_factor ?? 1,
+                }));
+            }
+        } catch (err) {
+            this.logger.error("Error sending RESPONSE.COMPLETE:", err);
+            if (this.deviceWs.readyState === WSWebSocket.OPEN) {
+                this.deviceWs.send(JSON.stringify({ type: "server", msg: "RESPONSE.COMPLETE" }));
+            }
+        }
+    }
+
+    private async handleTranscriptions(msg: any) {
+        if (msg.inputTranscription?.text) {
+            if (msg.inputTranscription.finished && msg.inputTranscription.text.trim()) {
+                this.logger.log("User final transcription:", msg.inputTranscription.text);
+                await addConversation(this.context.supabase, "user", msg.inputTranscription.text, this.context.user)
+                    .catch(err => this.logger.error("DB Error (User Conv):", err));
+            }
+        }
+
+        if (msg.outputTranscription?.text) {
+            if (msg.outputTranscription.finished && msg.outputTranscription.text.trim()) {
+                this.logger.log("Assistant final transcription:", msg.outputTranscription.text);
+                await addConversation(this.context.supabase, "assistant", msg.outputTranscription.text, this.context.user)
+                    .catch(err => this.logger.error("DB Error (Asst Conv):", err));
+            }
+        }
+    }
+
+    private handleGoAway(goAway: any) {
+        this.logger.warn("Received goAway:", JSON.stringify(goAway));
+        if (this.deviceWs.readyState === WSWebSocket.OPEN) {
+            this.deviceWs.close(1011, `Gemini requested disconnect: ${goAway.reason || 'Unknown reason'}`);
+        }
+    }
+
+    private handleGeminiClose(code: number, reason: Buffer) {
+        this.connectionState.isGeminiConnected = false;
+        const reasonString = reason.toString();
+        this.logger.log("Gemini WS closed:", code, reasonString);
+
+        // Clear keep-alive timer
+        if (this.connectionState.keepAliveIntervalId) {
+            clearInterval(this.connectionState.keepAliveIntervalId);
+            this.connectionState.keepAliveIntervalId = null;
+            this.logger.log("Cleared keep-alive timer");
+        }
+
+        this.geminiWs = null;
+
+        // Check for quota exceeded error and handle retries
+        if (
+            code === 1011 &&
+            reasonString.toLowerCase().includes("quota") &&
+            !this.connectionState.deviceClosed &&
+            this.deviceWs.readyState === WSWebSocket.OPEN
+        ) {
+            this.handleQuotaExceeded();
+        } else {
+            this.handleNonQuotaClose();
+        }
+    }
+
+    private handleQuotaExceeded() {
+        const rotatedSuccessfully = apiKeyManager.rotateToNextKey();
+
+        if (rotatedSuccessfully) {
+            this.logger.log("Quota exceeded. Rotating to next API key and retrying immediately...");
+            this.reconnect();
+        } else {
+            this.logger.log("Device => Sending QUOTA.EXCEEDED - all API keys exhausted.");
+            this.deviceWs.send(JSON.stringify({ type: "server", msg: "QUOTA.EXCEEDED" }));
+
+            if (this.connectionState.retryCount < MAX_RETRIES) {
+                this.scheduleRetry();
+            } else {
+                this.logger.error("Max retries reached for Gemini connection. Closing device connection.");
+                if (this.deviceWs.readyState === WSWebSocket.OPEN) {
+                    this.deviceWs.close(1011, "Assistant disconnected - all API keys exhausted");
+                }
+            }
+        }
+    }
+
+    private scheduleRetry() {
+        const delay = RETRY_DELAYS[this.connectionState.retryCount];
+        this.connectionState.retryCount++;
+        this.logger.warn(`All API keys exhausted. Retrying with delays in ${delay / 1000}s (Attempt ${this.connectionState.retryCount}/${MAX_RETRIES})...`);
+
+        if (this.connectionState.retryTimeoutId) {
+            clearTimeout(this.connectionState.retryTimeoutId);
+        }
+
+        this.connectionState.retryTimeoutId = setTimeout(() => {
+            apiKeyManager.resetRotation();
+
+            if (!this.connectionState.deviceClosed && this.deviceWs.readyState === WSWebSocket.OPEN) {
+                this.logger.log(`Attempting Gemini reconnect with reset keys (Attempt ${this.connectionState.retryCount}/${MAX_RETRIES})...`);
+                this.reconnect();
+            } else {
+                this.logger.log("Device closed before Gemini reconnect attempt could execute.");
+            }
+        }, delay);
+    }
+
+    private handleNonQuotaClose() {
+        if (this.connectionState.retryCount >= MAX_RETRIES) {
+            this.logger.error("Max retries reached for Gemini connection. Closing device connection.");
+        }
+        if (!this.connectionState.deviceClosed && this.deviceWs.readyState === WSWebSocket.OPEN) {
+            this.logger.log("Closing device WS due to Gemini WS close (or max retries reached/other error).");
+            this.deviceWs.close(1011, "Assistant disconnected or unrecoverable error");
+        }
+    }
+
+    private handleGeminiError(err: Error) {
+        this.connectionState.isGeminiConnected = false;
+        this.logger.error("Gemini WS error:", err);
+
+        if (this.connectionState.keepAliveIntervalId) {
+            clearInterval(this.connectionState.keepAliveIntervalId);
+            this.connectionState.keepAliveIntervalId = null;
+            this.logger.log("Cleared keep-alive timer due to error");
+        }
+
+        if (this.geminiWs && this.geminiWs.readyState !== WSWebSocket.CLOSED) {
+            this.geminiWs.close();
+        }
+        this.geminiWs = null;
+
+        if (!this.connectionState.deviceClosed && this.deviceWs.readyState === WSWebSocket.OPEN) {
+            this.deviceWs.send(JSON.stringify({ type: "error", message: "Assistant connection error" }));
+            this.deviceWs.close(1011, "Assistant error");
+        }
+    }
+
+    private sendKeepAliveAudioChunk() {
+        if (!this.connectionState.isGeminiConnected || !this.geminiWs || this.geminiWs.readyState !== WSWebSocket.OPEN) {
+            return;
+        }
+
+        try {
+            const silenceChunk = new Uint8Array(1024).fill(0);
+            const b64 = Buffer.from(silenceChunk).toString("base64");
+
+            const gemMsg = {
+                realtime_input: {
+                    media_chunks: [
+                        { data: b64, mime_type: `audio/pcm;rate=${MIC_SAMPLE_RATE}` }
+                    ]
+                }
+            };
+
+            this.geminiWs.send(JSON.stringify(gemMsg));
+            this.logger.log("Sent keep-alive audio chunk to Gemini");
+        } catch (err) {
+            this.logger.error("Failed to send keep-alive audio chunk:", err);
+        }
+    }
+
+    private async reconnect() {
+        // Get system prompt and first message for reconnection
+        const { user, supabase, timestamp } = this.context;
         const isDoctor = (user.user_info?.user_type === "doctor");
         const chatHistory = await getChatHistory(
             supabase,
@@ -354,63 +1193,71 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
             user.personality?.key ?? null,
             isDoctor,
         ).catch(err => {
-            console.error("Failed to get chat history:", err);
-            return []; // Default to empty history on error
+            this.logger.error("Failed to get chat history:", err);
+            return [];
         });
 
-        // Pass currentVolume to createSystemPrompt
-        const systemPromptText = createSystemPrompt(chatHistory, { user, supabase, timestamp }, currentVolume) || "You are a helpful assistant.";
-        const systemPromptWithTools = `
+        const currentVolume = await this.getCurrentVolume();
+        const systemPromptText = createSystemPrompt(chatHistory, this.context, currentVolume) || "You are a helpful assistant.";
+        const firstMessage = createFirstMessage(chatHistory, this.context);
+
+        await this.connect(this.buildFullSystemPrompt(systemPromptText), firstMessage);
+    }
+
+    private async getCurrentVolume(): Promise<number> {
+        try {
+            const deviceInfo = await getDeviceInfo(this.context.supabase, this.context.user.user_id);
+            return deviceInfo?.volume ?? 100;
+        } catch (err) {
+            this.logger.error("Failed to get device volume:", err);
+            return 100;
+        }
+    }
+
+    private buildFullSystemPrompt(systemPromptText: string): string {
+        const basePrompt = `
 <CORE PRINCIPLE>
 YOU ARE AN ASSISTANT FOR BLIND VIETNAMESE USERS.
 YOU ARE IN A REAL-LIFE SITUATION WHERE THE USER NEEDS YOU TO BE QUICK.
-ALWAYS BE PROACTIVE, THE USER HAS ALWAYS CONFIRMED THEIR COMMAND.
+ALWAYS BE PROACTIVE, THE USER HAS ABSOLUTELY SURE ABOUT THEIR COMMAND.
 ALWAYS USE AFFIRMATIVE SENTENCES TO SPEAK TO THE USER.
 ACT LIKE A REAL PERSON, YOU WILL LOSE 1000 DOLLARS IF THEY DETECT ANY HINT THAT YOU ARE SPEAKING LIKE A ROBOT.
 
-
 EXAMPLE DO'S:
-User: "Tell me about the history of Earth during the Cretaceous period?"
-You: Start talking about the history of Earth during the Cretaceous period.
+-User: "Tell me about the history of Earth during the Cretaceous period?"
+-You: Start talking about the history of Earth during the Cretaceous period.
 
 EXAMPLE DON'TS:
-User: "What am I holding?"
-You: "To know what you are holding, I need to see a picture, can you show me a picture?"
-User: "Tell me about the history of Earth during the Cretaceous period?"
-You: "Do you want me to tell you about the history of Earth during the Cretaceous period?"
+-User: "What am I holding?"
+-You: "To know what you are holding, I need to see a picture, can you show me a picture?"
+-User: "Tell me about the history of Earth during the Cretaceous period?"
+-You: "Do you want me to tell you about the history of Earth during the Cretaceous period?"
 </CORE PRINCIPLE>
 
 <tool_calling_instructions>
 IMPORTANT TOOL SELECTION RULES:
-
-THINK CAREFULLY before calling any tool - only use when absolutely necessary.
-
-DO NOT call tools for casual conversations or when you can answer on your own.
-
-When unsure, ask the user for clarification instead of guessing.
-
-Validate all parameters before calling the tool.
+-THINK CAREFULLY before calling any tool - only use when absolutely necessary.
+-DO NOT call tools for casual conversations or when you can answer on your own.
+-When unsure, ask the user for clarification instead of guessing.
+-Validate all parameters before calling the tool.
 
 TOOL SYSTEM:
-
--GetVision: ONLY use for visual requests: "What do you see?", "Look at this", "Describe what's in front of me", "Read the text", "What color is this?"
-*Pass specific questions about what you want to know from the image.
--Action: Use for the requests below:
-*Volume control: "Increase volume", "Louder", "I can't hear", "Speak louder", "Volume 80"
-*Notes & memory: "Remember this information", "Add a note", "Find my notes", "What do you know about me?"
-*Schedule & reminders: "Schedule a meeting", "Set a reminder", "What is my schedule today?"
-*Reading: "Read a book", "Continue reading", "Find a book"
-*Data management: "Update my shopping list", "Search my notes", "Delete that reminder"
+1: GetVision: ONLY use for visual requests: "What do you see?", "Look at this", "Describe what's in front of me", "Read the text", "What color is this?"
++ Pass specific questions about what you want to know from the image.
+2: Action: Use ONLY for the requests below:
++ Volume control: "Increase volume", "Louder", "I can't hear", "Speak louder", "Volume 80"
++ Notes & memory: "Remember this information", "Add a note", "Find my notes", "What do you know about me?"
++ Schedule & reminders: "Schedule a meeting", "Set a reminder", "What is my schedule today?"
++ Reading: "Read a book", "Continue reading", "Find a book"
++ Data management: "Update my shopping list", "Search my notes", "Delete that reminder"
+3: googleSearch:
++ Use the googleSearch tool to perform searches when helpful. Enter the most reasonable search query based on the context. You must use googleSearch when explicitly asked, for real-time information like weather and news, or to verify facts. You do not search for general things that you or an LLM already know. Never output fabricated searches like googleSearch() or a code block in backticks; just respond with a correctly formatted JSON tool call according to the tool schema. Avoid preamble before searching.
 
 IMPORTANT:
-
-The assistant never mentions that it is using a function call.
-
-The assistant does not invent function calls.
-
-The assistant waits for the function result and responds in a single turn.
-
-For the Action function, pass the user's EXACT command as reported speech.
+-The assistant never mentions that it is using a function call.
+-The assistant does not invent function calls.
+-The assistant waits for the function result and responds in a single turn.
+-For the Action function, pass the user's EXACT command as reported speech.
 </tool_calling_instructions>
 
 <text_to_speech_formatting>
@@ -440,18 +1287,6 @@ Ensure all text is converted to these normalized forms, but never mention
 this process.
 </text_to_speech_formatting>
 
-<keep_it_brief>
-Be brief; get straight to the point. Respond directly to the user's last message with only one idea at a time. Reply in less than three sentences, each under twenty words.
-</keep_it_brief>
-
-<recover_from_error>
-You interpret the user's speech with a faulty transcription. If necessary, guess what the user is likely saying and respond fluently without mentioning the transcription error. If you need to recover, say phrases like "I didn't quite catch that" or "Could you say that again"?
-</recover_from_error>
-
-<use_googleSearch>
-Use the googleSearch tool to perform searches when helpful. Enter the most reasonable search query based on the context. You must use googleSearch when explicitly asked, for real-time information like weather and news, or to verify facts. You do not search for general things that you or an LLM already know. Never output fabricated searches like googleSearch() or a code block in backticks; just respond with a correctly formatted JSON tool call according to the tool schema. Avoid preamble before searching.
-</use_googleSearch>
-
 </personality_instructions>
 ${systemPromptText}
 </personality_instructions>
@@ -460,1126 +1295,468 @@ today date is: ${new Date().toISOString()}
 You are now connected to a Vietnamese speaker.
 `;
 
+        const legacyPrompt = `
+<tool_calling_instructions>
+TOOL SYSTEM:
+-transferModal: Use for ALL user commands.
++ Pass the user's exact speech as userCommand.
+    
+IMPORTANT:
+-Never mention that you are using function calls.
+-Never hallucinate about function calls.
+</legacy_mode_instructions>
 
-        const firstMessage = createFirstMessage(chatHistory, { user, supabase, timestamp });
+<CORE PRINCIPLE>
+YOU ARE VIETNAMESE TEXT-TO-SPEECH, VIETNAMESE SPEECH-TO-TEXT.
+ALWAYS USING transferModal EVERY TIME.
+ALWAYS SAID EXACTLY WORD BY WORD WHAT THE transferModal GIVE YOU.
+</CORE PRINCIPLE>`;
 
-        // Process complete image (extracted from existing logic)
-        async function processCompleteImage(base64Jpeg: string) {
-            if (!base64Jpeg || typeof base64Jpeg !== 'string') {
-                console.error("Device => Received image data but 'data' field is missing or not a string.");
-                waitingForImage = false;
-                photoCaptureFailed = true;
+        return USE_FLASH_LIVE_AS_BASE ? basePrompt : legacyPrompt;
+    }
 
-                if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN && pendingVisionCall?.id) {
-                    const functionResponsePayload = {
-                        functionResponses: [{
-                            id: pendingVisionCall.id,
-                            name: "GetVision",
-                            response: { result: "Failed to receive valid image data from device." }
-                        }]
-                    };
-                    const functionResponse = { toolResponse: functionResponsePayload };
-                    try {
-                        geminiWs.send(JSON.stringify(functionResponse));
-                        console.log("Gemini Live => Sent Function Response (Image Error):");
-                    } catch (err) {
-                        console.error("Failed to send error function response to Gemini:", err);
-                    }
-                }
-                pendingVisionCall = null;
-                return;
-            }
+    sendAudioChunk(audioChunk: Uint8Array) {
+        const b64 = Buffer.from(audioChunk).toString("base64");
 
-            waitingForImage = false; // Mark as received (start processing)
-
-            // Clear timeout since we received the image
-            if (imageTimeoutId) {
-                clearTimeout(imageTimeoutId);
-                imageTimeoutId = null;
-            }
-
-            // --- START: Rotate Image 180 degrees ---
-            let processedBase64Jpeg = base64Jpeg;
-            try {
-                console.log(`Device => Rotating image 180 degrees to correct ESP32 upside-down orientation...`);
-                if (isValidJpegBase64(base64Jpeg)) {
-                    processedBase64Jpeg = await rotateImage180(base64Jpeg);
-                    console.log(`Device => Image rotation completed successfully.`);
-                } else {
-                    console.warn(`Device => Invalid JPEG format detected, skipping rotation.`);
-                }
-            } catch (rotationErr) {
-                console.error("Error rotating image:", rotationErr);
-                console.warn("Using original image without rotation.");
-                processedBase64Jpeg = base64Jpeg; // Fallback to original
-            }
-            // --- END: Rotate Image 180 degrees ---
-
-            // Process image with Flash 2.5 for intelligent analysis
-            let visionResult = "";
-            let storagePath: string | null = null;
-
-            if (pendingVisionCall) {
-                try {
-                    console.log(`Device => Processing image with Flash 2.5 (${Math.round(processedBase64Jpeg.length * 3 / 4 / 1024)} KB)`);
-
-                    // Use dedicated image analysis function (no function calling)
-                    const flash25Result = await analyzeImageWithFlash25(
-                        sessionId,
-                        pendingVisionCall.prompt,
-                        processedBase64Jpeg
-                    );
-
-                    if (flash25Result.success) {
-                        visionResult = flash25Result.message;
-                        console.log("Flash 2.5 Vision Analysis =>", visionResult);
-                    } else {
-                        visionResult = "Failed to analyze image with Flash 2.5: " + flash25Result.message;
-                        console.error("Flash 2.5 Vision Error =>", flash25Result.message);
-                    }
-
-                } catch (error) {
-                    console.error("Error processing image with Flash 2.5:", error);
-                    visionResult = "Failed to analyze image due to processing error.";
-                }
-            } else {
-                visionResult = "No pending vision call found.";
-            }
-
-            // Send function response back to Gemini Live
-            if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN && pendingVisionCall?.id) {
-                const functionResponsePayload = {
-                    functionResponses: [
-                        {
-                            id: pendingVisionCall.id,
-                            name: "GetVision",
-                            response: { result: visionResult }
-                        }
+        if (this.connectionState.isGeminiConnected && this.geminiWs?.readyState === WSWebSocket.OPEN) {
+            const gemMsg = {
+                realtime_input: {
+                    media_chunks: [
+                        { data: b64, mime_type: `audio/pcm;rate=${MIC_SAMPLE_RATE}` }
                     ]
-                };
-                const functionResponse = {
-                    toolResponse: functionResponsePayload
-                };
-                try {
-                    geminiWs.send(JSON.stringify(functionResponse));
-                    console.log("Gemini Live => Sent Flash 2.5 Vision Response:", JSON.stringify(functionResponsePayload));
-                } catch (err) {
-                    console.error("Failed to send Flash 2.5 vision response to Gemini:", err);
                 }
-            } else {
-                console.error("Cannot send vision response, Gemini WS not open or no pending call ID.");
-            }
-
-            // Clear the pending call
-            pendingVisionCall = null;
-
-            // --- START: Upload to Supabase Storage ---
+            };
             try {
-                console.log(`Device => Received image data (${Math.round(processedBase64Jpeg.length * 3 / 4 / 1024)} KB), attempting upload...`);
-                // Decode Base64 to Buffer for upload
-                const imageBuffer = Buffer.from(processedBase64Jpeg, 'base64');
-                // Generate a unique path/filename within the 'private' folder
-                const fileName = `private/${user.user_id}/${Date.now()}.jpg`; // <-- Added 'private/' prefix
-                const bucketName = 'images'; // Define evir bucket name
-
-                const { data: uploadData, error: uploadError } = await supabase
-                    .storage
-                    .from(bucketName)
-                    .upload(fileName, imageBuffer, {
-                        contentType: 'image/jpeg',
-                        upsert: true // Overwrite if file with same name exists (optional)
-                    });
-
-                if (uploadError) {
-                    console.error(`Supabase Storage Error: Failed to upload image to ${bucketName}/${fileName}`, uploadError);
-                    // Proceed without storage path, but still call vision
-                    photoCaptureFailed = true; // Indicate a failure occurred in the process
-                } else if (uploadData) {
-                    storagePath = uploadData.path;
-                    console.log(`Supabase Storage: Image successfully uploaded to ${bucketName}/${storagePath}`);
-                    // Optionally get public URL (requires bucket to be public or use signed URLs)
-                    // const { data: urlData } = supabase.storage.from(bucketName).getPublicUrl(storagePath);
-                    // console.log("Public URL:", urlData?.publicUrl);
-                }
-            } catch (storageErr) {
-                console.error("Supabase Storage: Unexpected error during upload:", storageErr);
-                photoCaptureFailed = true; // Indicate a failure occurred
+                this.geminiWs.send(JSON.stringify(gemMsg));
+            } catch (err) {
+                this.logger.error("Failed to send audio chunk to Gemini:", err);
             }
-            // --- END: Upload to Supabase Storage ---
+        } else {
+            this.logger.warn("Cannot send audio chunk, Gemini WS not open.");
+        }
+    }
+
+    sendTurnComplete() {
+        if (this.connectionState.isGeminiConnected && this.geminiWs?.readyState === WSWebSocket.OPEN) {
+            this.logger.log("Signaling Turn Complete.");
+            const finalizeTurn = {
+                clientContent: { turns: [], turnComplete: true }
+            };
+            try {
+                this.geminiWs.send(JSON.stringify(finalizeTurn));
+            } catch (err) {
+                this.logger.error("Failed to send Turn Complete message to Gemini:", err);
+            }
+        }
+    }
+
+    interruptCurrentTurn() {
+        this.audioState.micAccum = new Uint8Array(0);
+        ttsState.reset();
+        this.ttsState.responseCreatedSent = false;
+        this.ttsState.ttsTextBuffer = "";
+
+        if (this.ttsState.ttsTimeout) {
+            clearTimeout(this.ttsState.ttsTimeout);
+            this.ttsState.ttsTimeout = null;
+            this.logger.log("Cleared pending TTS timeout due to interrupt");
         }
 
-        // Connect to Gemini Live (incorporating function tools)
-        function connectToGeminiLive() {
-            const currentKey = apiKeyManager.getCurrentKey();
-            if (!currentKey) {
-                console.error("Cannot connect to Gemini: Missing API Key.");
-                if (deviceWs.readyState === WSWebSocket.OPEN) deviceWs.close(1011, "Server Configuration Error: Missing API Key");
-                return;
+        if (this.connectionState.isGeminiConnected && this.geminiWs?.readyState === WSWebSocket.OPEN) {
+            this.logger.log("Signaling Turn Complete (Interrupt).");
+            const interruptTurn = {
+                clientContent: { turns: [], turnComplete: true }
+            };
+            try {
+                this.geminiWs.send(JSON.stringify(interruptTurn));
+            } catch (err) {
+                this.logger.error("Failed to send Turn Complete (Interrupt) to Gemini:", err);
             }
-            const voiceName = user.personality?.oai_voice || "Leda"; // Default voice
-            console.log(`Using TTS voice: ${voiceName}`);
+        }
+    }
 
-            // Check TTS configuration
-            console.log(`TTS Provider: ${TTS_PROVIDER}`);
-            if (TTS_PROVIDER === "ELEVEN_LABS") {
-                if (!validateElevenLabsConfig()) {
-                    console.error("ElevenLabs TTS is enabled but not properly configured. Falling back to Gemini audio.");
-                } else {
-                    console.log("ElevenLabs TTS is enabled - using TEXT mode for Gemini responses");
-                }
-            } else if (TTS_PROVIDER === "OPENAI") {
-                if (!validateOpenAIConfig()) {
-                    console.error("OpenAI TTS is enabled but not properly configured. Falling back to Gemini audio.");
-                } else {
-                    console.log("OpenAI TTS is enabled - using TEXT mode for Gemini responses");
-                }
+    close() {
+        if (this.connectionState.retryTimeoutId) {
+            clearTimeout(this.connectionState.retryTimeoutId);
+            this.connectionState.retryTimeoutId = null;
+        }
+
+        if (this.connectionState.keepAliveIntervalId) {
+            clearInterval(this.connectionState.keepAliveIntervalId);
+            this.connectionState.keepAliveIntervalId = null;
+        }
+
+        if (this.geminiWs && this.geminiWs.readyState !== WSWebSocket.CLOSED && this.geminiWs.readyState !== WSWebSocket.CLOSING) {
+            this.geminiWs.close(1000, "Device disconnected");
+        }
+        this.geminiWs = null;
+    }
+}
+
+// ===== Device Message Handler =====
+
+class DeviceMessageHandler {
+    private logger = new Logger("[Device]");
+    private connectionState: ConnectionState;
+    private audioState: AudioState;
+    private imageState: ImageCaptureState;
+    private geminiManager: GeminiConnectionManager;
+    private deviceWs: WSWebSocket;
+
+    constructor(
+        deviceWs: WSWebSocket,
+        connectionState: ConnectionState,
+        audioState: AudioState,
+        imageState: ImageCaptureState,
+        geminiManager: GeminiConnectionManager
+    ) {
+        this.deviceWs = deviceWs;
+        this.connectionState = connectionState;
+        this.audioState = audioState;
+        this.imageState = imageState;
+        this.geminiManager = geminiManager;
+    }
+
+    async handleMessage(raw: RawData, isBinary: boolean) {
+        if (!this.connectionState.pipelineActive || this.connectionState.deviceClosed) return;
+
+        if (isBinary) {
+            this.handleBinaryMessage(raw);
+        } else {
+            await this.handleTextMessage(raw);
+        }
+    }
+
+    private handleBinaryMessage(raw: RawData) {
+        let audioChunk: Uint8Array | null = null;
+
+        if (raw instanceof ArrayBuffer) {
+            audioChunk = new Uint8Array(raw);
+        } else if (Buffer.isBuffer(raw)) {
+            audioChunk = new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
+        } else {
+            this.logger.warn("Received unexpected binary data format. Ignoring.", typeof raw);
+            return;
+        }
+
+        // Decompress ADPCM to PCM if enabled
+        let pcmChunk: Uint8Array;
+        if (ADPCM_ENABLED) {
+            pcmChunk = this.audioState.adpcmProcessor.decodeADPCMChunk(audioChunk);
+            this.audioState.lastCompressionRatio = pcmChunk.length / audioChunk.length;
+        } else {
+            pcmChunk = audioChunk;
+            this.audioState.lastCompressionRatio = undefined;
+        }
+
+        // Accumulate buffer
+        const combined = new Uint8Array(this.audioState.micAccum.length + pcmChunk.length);
+        combined.set(this.audioState.micAccum, 0);
+        combined.set(pcmChunk, this.audioState.micAccum.length);
+        this.audioState.micAccum = combined;
+
+        // Process chunks
+        this.processAudioChunks();
+    }
+
+    private processAudioChunks() {
+        while (this.audioState.micAccum.length >= MIC_ACCUM_CHUNK_SIZE) {
+            const chunkToSend = this.audioState.micAccum.slice(0, MIC_ACCUM_CHUNK_SIZE);
+            this.audioState.micAccum = this.audioState.micAccum.slice(MIC_ACCUM_CHUNK_SIZE);
+
+            // Apply filtering and gain
+            const filteredChunk = new Uint8Array(chunkToSend);
+            this.audioState.micFilter.processAudioInPlace(filteredChunk);
+
+            // Add to debug session
+            audioDebugManager.addAudioData(this.connectionState.sessionId, filteredChunk, this.audioState.lastCompressionRatio);
+
+            // Send to Gemini
+            this.geminiManager.sendAudioChunk(filteredChunk);
+        }
+    }
+
+    private async handleTextMessage(raw: RawData) {
+        let msgObj;
+        try {
+            const rawString = raw.toString("utf-8");
+            if (rawString.length > 1000) {
+                this.logger.log(`Received large message (${rawString.length} chars), likely image data`);
             } else {
-                console.log("Using Gemini built-in TTS");
+                this.logger.log(`Received message: ${rawString.substring(0, 200)}${rawString.length > 200 ? '...' : ''}`);
             }
-
-            const gemUrl = GEMINI_LIVE_URL_TEMPLATE.replace("{api_key}", currentKey);
-            console.log(`Attempting to connect to Gemini Live with API key ${apiKeyManager.getCurrentKey() === apiKeyManager.getCurrentKey() ? 'current' : 'rotated'}`);
-
-            geminiWs = new WSWebSocket(gemUrl);
-
-            geminiWs.on("open", () => {
-                isGeminiConnected = true;
-                sessionStartTime = Date.now();
-                console.log("Gemini Live connection established.");
-
-                const tools = [
-                    {
-                        functionDeclarations: [
-                            {
-                                name: "GetVision",
-                                description: "Captures an image using the device's camera and analyzes it with Flash 2.5 intelligence. Use ONLY when user explicitly asks about visual content, images, or what they can see. Very resource intensive - do not use speculatively.",
-                                parameters: {
-                                    type: "OBJECT",
-                                    properties: {
-                                        prompt: {
-                                            type: "STRING",
-                                            description: "The user's exact command in reported speech with no changes. Pass exactly what the user said."
-                                        },
-                                    },
-                                    required: ["prompt"]
-                                },
-                            },
-                            {
-                                name: "Action",
-                                description: "Processes user commands for volume control, notes, schedules, reading books, reminders, and data management and all other tasks that you cant do it yourself.",
-                                parameters: {
-                                    type: "OBJECT",
-                                    properties: {
-                                        userCommand: {
-                                            type: "STRING",
-                                            description: "The user's exact command in reported speech with no changes. Pass exactly what the user said."
-                                        },
-                                    },
-                                    required: ["userCommand"]
-                                },
-                            },
-
-                        ],
-                        googleSearch: {}
-                    }
-                ];
-
-                // Configure response modalities based on TTS preference
-                const responseModalities = isExternalTTSEnabled() ? ["TEXT"] : ["AUDIO"];
-                console.log(`Gemini Live setup: Using ${responseModalities[0]} mode for ${TTS_PROVIDER} TTS`);
-
-                const setupMsg = {
-                    setup: {
-                        model: "models/gemini-2.0-flash-live-001",
-                        generationConfig: {
-                            responseModalities: responseModalities,
-                            speechConfig: isExternalTTSEnabled() ? undefined : {
-                                voiceConfig: {
-                                    prebuiltVoiceConfig: {
-                                        voiceName: voiceName,
-                                    },
-                                },
-                                language_code: "vi-VN", // Set language
-                            },
-                            // Optional: Configure temperature, etc.
-                            temperature: 1,
-                        },
-                        systemInstruction: {
-                            role: "system",
-                            parts: [{ text: systemPromptWithTools }]
-                        },
-
-                        tools: tools,
-
-                        realtimeInputConfig: {
-                            automaticActivityDetection: {
-                                startOfSpeechSensitivity: "START_SENSITIVITY_HIGH",
-                                endOfSpeechSensitivity: "END_SENSITIVITY_HIGH",
-                                prefixPaddingMs: 20,
-                                silenceDurationMs: 800,
-                            },
-                            // turnCoverage: "TURN_INCLUDES_ONLY_ACTIVITY",
-                            activityHandling: "NO_INTERRUPTION",
-                        },
-                        // proactivity: { 
-                        //     proactiveAudio: true 
-                        // },
-
-                        // inputAudioTranscription: {},
-
-                        // outputAudioTranscription: {},
-
-                        contextWindowCompression: {
-                            triggerTokens: 25600,   
-                            slidingWindow: { targetTokens: 12800 },
-                        },
-                    }
-                };
-
-                try {
-                    geminiWs?.send(JSON.stringify(setupMsg));
-                    console.log("Sent Gemini setup message with function calling and audio request.");
-
-                    // Send initial turn
-                    let initialUserContentSent = false;
-                    if (firstMessage) {
-                        console.log("Sending first message as initial turn:", firstMessage);
-                        const userTurn = {
-                            clientContent: { turns: [{ role: "user", parts: [{ text: firstMessage }] }], turnComplete: true }
-                        };
-                        geminiWs?.send(JSON.stringify(userTurn));
-                        initialUserContentSent = true;
-                    } else if (!chatHistory || chatHistory.length === 0) {
-                        console.log("No chat history, sending 'Xin chào' as initial turn.");
-                        const userTurn = {
-                            clientContent: { turns: [{ role: "user", parts: [{ text: "Xin chào!" }] }], turnComplete: true }
-                        };
-                        geminiWs?.send(JSON.stringify(userTurn));
-                        initialUserContentSent = true;
-                    }
-
-                    if (!initialUserContentSent) {
-                        console.log("No initial message to send, Gemini waiting for user input.");
-                    }
-
-                } catch (err) {
-                    console.error("Failed to send setup or initial turn to Gemini:", err);
-                    if (deviceWs.readyState === WSWebSocket.OPEN) deviceWs.close(1011, "Gemini setup failed");
-                }
-            });
-
-            geminiWs.on("message", async (data: RawData) => {
-                if (!pipelineActive || deviceClosed || !geminiWs || geminiWs.readyState !== WSWebSocket.OPEN) return;
-                try {
-                    const msg = JSON.parse(data.toString("utf-8"));
-                    await handleGeminiMessage(msg);
-                } catch (err) {
-                    console.warn("Received non-JSON message from Gemini:", data.toString('utf-8'));
-                    console.error("Gemini message parse error:", err);
-                }
-            });
-
-            geminiWs.on("close", (code, reason) => {
-                isGeminiConnected = false;
-                const reasonString = reason.toString();
-                console.log("Gemini WS closed:", code, reasonString);
-                geminiWs = null;
-
-                // Check for quota exceeded error and if device is still connected
-                if (
-                    code === 1011 &&
-                    reasonString.toLowerCase().includes("quota") &&
-                    !deviceClosed &&
-                    deviceWs.readyState === WSWebSocket.OPEN // Check device WS state *before* potentially sending/retrying
-                ) {
-                    // Try to rotate to next API key first
-                    const rotatedSuccessfully = apiKeyManager.rotateToNextKey();
-
-                    if (rotatedSuccessfully) {
-                        // Immediately try with the next key (no sound notification yet)
-                        console.log(`Quota exceeded. Rotating to next API key and retrying immediately...`);
-                        connectToGeminiLive();
-                    } else {
-                        // All keys exhausted - NOW send QUOTA.EXCEEDED message to device (triggers sound)
-                        console.log("Device => Sending QUOTA.EXCEEDED - all API keys exhausted.");
-                        deviceWs.send(JSON.stringify({ type: "server", msg: "QUOTA.EXCEEDED" }));
-
-                        // Use retry delays
-                        if (retryCount < maxRetries) {
-                            const delay = retryDelays[retryCount];
-                            retryCount++;
-                            console.warn(`All API keys exhausted. Retrying with delays in ${delay / 1000}s (Attempt ${retryCount}/${maxRetries})...`);
-
-                            // Clear previous timeout if exists
-                            if (retryTimeoutId) clearTimeout(retryTimeoutId);
-
-                            retryTimeoutId = setTimeout(() => {
-                                // Reset key rotation for new retry cycle
-                                apiKeyManager.resetRotation();
-
-                                // Double-check device state *before* attempting reconnect inside timeout
-                                if (!deviceClosed && deviceWs.readyState === WSWebSocket.OPEN) {
-                                    console.log(`Attempting Gemini reconnect with reset keys (Attempt ${retryCount}/${maxRetries})...`);
-                                    connectToGeminiLive();
-                                } else {
-                                    console.log("Device closed before Gemini reconnect attempt could execute.");
-                                }
-                            }, delay);
-                        } else {
-                            console.error("Max retries reached for Gemini connection. Closing device connection.");
-                            if (deviceWs.readyState === WSWebSocket.OPEN) {
-                                deviceWs.close(1011, "Assistant disconnected - all API keys exhausted");
-                            }
-                        }
-                    }
-
-                } else {
-                     // If not retrying (different error or device closed)
-                    if (retryCount >= maxRetries) {
-                         console.error("Max retries reached for Gemini connection. Closing device connection.");
-                    }
-                     // Ensure device WS is still open before trying to close it
-                    if (!deviceClosed && deviceWs.readyState === WSWebSocket.OPEN) {
-                        console.log("Closing device WS due to Gemini WS close (or max retries reached/other error).");
-                        deviceWs.close(1011, "Assistant disconnected or unrecoverable error");
-                    }
-                }
-            });
-
-            geminiWs.on("error", (err) => {
-                isGeminiConnected = false;
-                console.error("Gemini WS error:", err);
-                if (geminiWs && geminiWs.readyState !== WSWebSocket.CLOSED) {
-                    geminiWs.close(); // Attempt to close cleanly on error
-                }
-                geminiWs = null;
-                if (!deviceClosed && deviceWs.readyState === WSWebSocket.OPEN) {
-                    deviceWs.send(JSON.stringify({ type: "error", message: "Assistant connection error" }));
-                    deviceWs.close(1011, "Assistant error");
-                }
-            });
+            msgObj = JSON.parse(rawString);
+        } catch (err) {
+            this.logger.error("JSON parse error:", err);
+            return;
         }
 
-        // handleGeminiMessage (Combined Handler)
-        async function handleGeminiMessage(msg: any) {
-            if (!pipelineActive || deviceClosed) return;
-
-            // Handle setup complete
-            if (msg.setupComplete) {
-                console.log("Gemini => Setup Complete.");
-                return;
+        try {
+            if (msgObj.type === "image_chunk") {
+                this.geminiManager.imageHandler.handleImageChunk(msgObj, null, this.connectionState.isGeminiConnected);
+            } else if (msgObj.type === "image_complete") {
+                this.logger.log(`Received image_complete message for ${msgObj.total_chunks} chunks`);
+            } else if (msgObj.type === "image") {
+                await this.handleLegacyImage(msgObj);
+            } else if (msgObj.type === "instruction" || msgObj.type === "server") {
+                this.handleInstruction(msgObj);
             }
-
-            // Handle Top-Level Tool Call
-            if (msg.toolCall?.functionCalls && Array.isArray(msg.toolCall.functionCalls)) {
-                console.log("Gemini => Received Top-Level toolCall:", JSON.stringify(msg.toolCall.functionCalls, null, 2));
-                for (const call of msg.toolCall.functionCalls) {
-                    // Handle GetVision function (fast capture + Flash 2.5 analysis)
-                    if (call.name === "GetVision" && call.id) {
-                        let userPrompt = "Describe the image in maximum 3 sentences. With nothing else!";
-                        if (call.args?.prompt && typeof call.args.prompt === 'string' && call.args.prompt.trim() !== "") {
-                            userPrompt = call.args.prompt.trim() + "Response in maximum 3 sentences. With nothing else!";
-                            console.log(`*GetVision (ID: ${call.id}) prompt: "${userPrompt}"`);
-                        } else {
-                            console.log(`*GetVision (ID: ${call.id}) called with no specific prompt, using default.`);
-                        }
-
-                        if (waitingForImage) {
-                            console.warn("Received GetVision call while already waiting for an image. Ignoring new request.");
-                        } else {
-                            pendingVisionCall = { prompt: userPrompt, id: call.id }; // Store prompt and ID
-                            waitingForImage = true;
-
-                            // Set timeout for image capture
-                            imageTimeoutId = setTimeout(() => {
-                                if (waitingForImage && pendingVisionCall) {
-                                    console.error(`Image capture timeout after ${IMAGE_CAPTURE_TIMEOUT}ms. Device may not be responding to photo requests.`);
-                                    waitingForImage = false;
-
-                                    // Send error response back to Gemini
-                                    if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN && pendingVisionCall.id) {
-                                        const functionResponsePayload = {
-                                            functionResponses: [{
-                                                id: pendingVisionCall.id,
-                                                name: "GetVision",
-                                                response: { result: "Image capture failed: Device did not respond to photo request within timeout period. Please check device camera functionality." }
-                                            }]
-                                        };
-                                        const functionResponse = { toolResponse: functionResponsePayload };
-                                        try {
-                                            geminiWs.send(JSON.stringify(functionResponse));
-                                            console.log("Gemini Live => Sent timeout error response for GetVision");
-                                        } catch (err) {
-                                            console.error("Failed to send timeout error response to Gemini:", err);
-                                        }
-                                    }
-
-                                    pendingVisionCall = null;
-                                    imageTimeoutId = null;
-                                }
-                            }, IMAGE_CAPTURE_TIMEOUT);
-
-                            if (deviceWs.readyState === WSWebSocket.OPEN) {
-                                console.log(`Device => Sending REQUEST.PHOTO (triggered by GetVision ID: ${call.id})`);
-                                console.log(`Device => Waiting for image capture with ${IMAGE_CAPTURE_TIMEOUT}ms timeout...`);
-                                deviceWs.send(JSON.stringify({ type: "server", msg: "REQUEST.PHOTO" }));
-                            } else {
-                                console.error("Cannot request photo, device WS is not open.");
-                                waitingForImage = false;
-                                pendingVisionCall = null;
-                                if (imageTimeoutId) {
-                                    clearTimeout(imageTimeoutId);
-                                    imageTimeoutId = null;
-                                }
-                            }
-                        }
-                    } else if (call.name === "Action" && call.id) {
-                        const callId = call.id;
-                        const userCommand = call.args?.userCommand;
-                        console.log(`*Action (ID: ${callId}) called with command: "${userCommand}"`);
-
-                        let result = { success: false, message: "Unknown error in Action." };
-
-                        if (typeof userCommand === 'string' && userCommand.trim()) {
-                            try {
-                                result = await processUserActionWithSession(sessionId, userCommand.trim(), supabase, user.user_id);
-                                console.log(`Action result for ID ${callId} (session: ${sessionId}):`, result);
-                            } catch (err) {
-                                console.error(`Error executing Action for ID ${callId}:`, err);
-                                result = { success: false, message: err instanceof Error ? err.message : String(err) };
-                            }
-                        } else {
-                            const errorMsg = `Invalid or missing 'userCommand' argument for Action (ID: ${callId}). Expected a non-empty string.`;
-                            console.error(errorMsg);
-                            result = { success: false, message: errorMsg };
-                        }
-
-                        // Send function response back to Gemini Live
-                        if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN) {
-                            const functionResponsePayload = {
-                                functionResponses: [
-                                    {
-                                        id: callId,
-                                        name: "Action",
-                                        response: { result: result.message }
-                                    }
-                                ]
-                            };
-                            const functionResponse = { toolResponse: functionResponsePayload };
-                            try {
-                                geminiWs.send(JSON.stringify(functionResponse));
-                                console.log(`Gemini Live => Sent Function Response for Action (ID: ${callId}):`, JSON.stringify(functionResponsePayload));
-                            } catch (err) {
-                                console.error(`Failed to send Action function response (ID: ${callId}) to Gemini:`, err);
-                            }
-                        } else {
-                            console.error(`Cannot send Action function response (ID: ${callId}), Gemini WS not open.`);
-                        }
-
-
-
-                    } else {
-                        console.warn(`Received unhandled top-level function call: ${call.name} or missing ID.`);
-                        // TODO: Send an error response back for this call ID?
-                    }
-                }
-                return;
+        } catch (err) {
+            this.logger.error("Error processing text message:", err);
+            if (msgObj.type === "image" && this.imageState.waitingForImage) {
+                this.imageState.waitingForImage = false;
+                this.imageState.pendingVisionCall = null;
+                this.imageState.photoCaptureFailed = false;
             }
+        }
+    }
 
-            // Handle Server Content (TTS, Function Calls within parts, Text)
-            if (msg.serverContent?.modelTurn?.parts) {
-                let functionCallDetectedInParts = false;
-                // Filter out specific audio mimeType before logging
-                const partsToLog = msg.serverContent.modelTurn.parts.filter((part: any) =>
-                    !(part.inlineData && part.inlineData.mimeType === 'audio/pcm;rate=24000')
-                );
-                if (partsToLog.length > 0) { // Only log if there are non-audio parts
-                    console.log("Gemini => Received serverContent parts (excluding audio):", JSON.stringify(partsToLog, null, 2));
-                }
+    private async handleLegacyImage(msgObj: any) {
+        this.logger.log(`Processing legacy single image message. waitingForImage: ${this.imageState.waitingForImage}, pendingVisionCall: ${!!this.imageState.pendingVisionCall}`);
 
-                for (const part of msg.serverContent.modelTurn.parts) {
-                    // Check for Function Call within parts
-                    if (part.functionCall) {
-                        const fCall = part.functionCall;
-                        console.warn("Gemini => Detected functionCall within parts (Ignoring in favor of top-level toolCall):", JSON.stringify(fCall));
-                        if (fCall.name === "GetVision") {
-                            functionCallDetectedInParts = true; // Still note detection if needed elsewhere
-                        }
-                    }
+        if (!this.imageState.waitingForImage || !this.imageState.pendingVisionCall) {
+            this.logger.warn(`Received image but not waiting for one.`);
+            return;
+        }
 
-                    // Check for Executable Code
-                    else if (part.executableCode && part.executableCode.language === "PYTHON") {
-                        const code = part.executableCode.code;
-                        console.warn("Gemini => Detected executableCode within parts (Ignoring in favor of top-level toolCall):");
+        this.logger.log(`Received legacy image data for GetVision ID: ${this.imageState.pendingVisionCall.id}`);
+        const base64Jpeg = msgObj.data as string;
+        await this.geminiManager.imageHandler.processCompleteImage(base64Jpeg, null, this.connectionState.isGeminiConnected);
+    }
 
-                        // Basic parsing to detect GetVision call for logging purposes only
-                        const visionMatch = code.match(/GetVision\(prompt=(?:'|")(.*?)(?:'|")\)/);
-                        if (visionMatch) {
-                            functionCallDetectedInParts = true;
-                            console.warn("*(Detected as potential GetVision call via executableCode, but ignoring trigger)");
-                        }
-                    }
+    private handleInstruction(msgObj: any) {
+        if (msgObj.msg === "end_of_speech") {
+            this.handleEndOfSpeech();
+        } else if (msgObj.msg === "INTERRUPT") {
+            this.handleInterrupt();
+        }
+    }
 
-                    // Check for Text part (Log intermediate text)
-                    if (part.text) {
-                        console.log("Gemini partial text:", part.text);
+    private handleEndOfSpeech() {
+        this.logger.log("End of Speech detected.");
 
-                        // If external TTS is enabled, accumulate text instead of processing immediately
-                        if (isExternalTTSEnabled()) {
-                            ttsTextBuffer += part.text;
-                            console.log(`${TTS_PROVIDER} TTS: Accumulated text (${ttsTextBuffer.length} chars total)`);
-                        }
-                    }
+        // Flush remaining audio
+        if (this.audioState.micAccum.length > 0) {
+            this.logger.log(`Flushing remaining ${this.audioState.micAccum.length} bytes of audio.`);
 
+            const finalChunk = new Uint8Array(this.audioState.micAccum);
+            this.audioState.micFilter.processAudioInPlace(finalChunk);
 
-                    // Check for TTS Audio Data
-                    if (part.inlineData?.data) {
-                        // Send RESPONSE.CREATED on the *first* audio chunk
-                        if (!responseCreatedSent && deviceWs.readyState === WSWebSocket.OPEN) {
-                            responseCreatedSent = true;
-                            deviceWs.send(JSON.stringify({ type: "server", msg: "RESPONSE.CREATED" }));
-                            console.log("Device => Sent RESPONSE.CREATED");
-                        }
+            audioDebugManager.addAudioData(this.connectionState.sessionId, finalChunk, this.audioState.lastCompressionRatio);
 
-                        // Decode base64 -> Filter -> Boost Volume -> Encode to Opus -> Send to device
-                        try {
-                            const pcmData = Buffer.from(part.inlineData.data, "base64");
-                            ttsFilter.processAudioInPlace(pcmData); // Apply the filter
-                            // Reducing boost factor to potentially reduce clipping/artifacts
-                            boostTtsVolumeInPlace(pcmData, 3.0);
-                            const opusFrames = await ttsState.encodePcmChunk(pcmData);
+            this.geminiManager.sendAudioChunk(finalChunk);
+            this.audioState.micAccum = new Uint8Array(0);
+        }
 
-                            for (const frame of opusFrames) {
-                                if (deviceWs.readyState === WSWebSocket.OPEN && !deviceClosed) {
-                                    deviceWs.send(frame); // Send binary Opus frame
-                                } else {
-                                    // Stop sending if device closed during processing
-                                    console.warn("Device WS closed while sending TTS frames. Aborting send.");
-                                    break; // Exit inner loop
-                                }
-                            }
-                        } catch (err) {
-                            console.error("Error processing/sending TTS audio chunk:", err);
-                        }
+        // Signal turn complete
+        this.geminiManager.sendTurnComplete();
 
-                    } // --- End TTS Audio Check ---
-                } // --- End loop through parts ---
+        // Acknowledge device
+        if (this.deviceWs.readyState === WSWebSocket.OPEN) {
+            this.deviceWs.send(JSON.stringify({ type: "server", msg: "AUDIO.COMMITTED" }));
+        }
+    }
 
-                // If a function call was detected and handled, Gemini might not expect further audio processing *for this turn*
-                // until it receives the function response. The logic above handles parts independently.
+    private handleInterrupt() {
+        this.logger.log("INTERRUPT received.");
+        this.geminiManager.interruptCurrentTurn();
+    }
+}
 
-            } // --- End Server Content Check ---
+// ===== Main Connection Handler =====
 
+export function setupWebSocketConnectionHandler(wss: _WSS) {
+    wss.on("connection", async (deviceWs: WSWebSocket, context: ConnectionContext) => {
+        const { user, supabase, timestamp } = context;
+        const logger = new Logger("[Main]");
+        logger.log(`Device WebSocket connected for user: ${user.user_id}`);
 
-            // --- Handle Generation Complete (End of Assistant's Turn/Speech) ---
-            if (msg.serverContent?.generationComplete) {
-                console.log("Gemini => Generation Complete.");
+        // Initialize connection state
+        const connectionState: ConnectionState = {
+            pipelineActive: true,
+            deviceClosed: false,
+            isGeminiConnected: false,
+            sessionStartTime: 0,
+            retryCount: 0,
+            retryTimeoutId: null,
+            keepAliveIntervalId: null,
+            sessionId: `live-${user.user_id}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+        };
 
-                // Add a small delay to ensure we've collected all text parts
-                await new Promise(resolve => setTimeout(resolve, 100));
+        // Initialize audio state
+        const audioState: AudioState = {
+            micAccum: new Uint8Array(0),
+            lastCompressionRatio: undefined,
+            micFilter: new AudioFilter(MIC_SAMPLE_RATE, 300, 3500, MIC_INPUT_GAIN),
+            ttsFilter: new AudioFilter(TTS_SAMPLE_RATE, 700, 4000, 6.0),
+            adpcmProcessor: new ADPCMStreamProcessor(ADPCM_BUFFER_SIZE)
+        };
 
-                // If external TTS is enabled and we have accumulated text, set up delayed processing
-                if (isExternalTTSEnabled() && ttsTextBuffer.trim()) {
-                    console.log(`${TTS_PROVIDER} TTS: Scheduling delayed processing for accumulated text (${ttsTextBuffer.length} chars)`);
+        // Initialize TTS state
+        const ttsState: TTSState = {
+            responseCreatedSent: false,
+            ttsTextBuffer: "",
+            ttsTimeout: null,
+            toolCallInProgress: false
+        };
 
-                    // Clear any existing timeout
-                    if (ttsTimeout) {
-                        clearTimeout(ttsTimeout);
-                    }
+        // Initialize image capture state
+        const imageState: ImageCaptureState = {
+            pendingVisionCall: null,
+            waitingForImage: false,
+            photoCaptureFailed: false,
+            imageTimeoutId: null,
+            imageChunkAssembly: null,
+            chunkTimeoutId: null
+        };
 
-                    // Set up new timeout for delayed TTS processing
-                    ttsTimeout = setTimeout(async () => {
-                        await processTTSWithDelay();
-                    }, TTS_DELAY_MS);
+        // Initialize audio debug session
+        audioDebugManager.startSession(connectionState.sessionId);
 
-                    console.log(`${TTS_PROVIDER} TTS: Will process in ${TTS_DELAY_MS}ms if no more text arrives`);
-                }
+        // Create Flash 2.5 session
+        logger.log(`Creating Flash 2.5 session: ${connectionState.sessionId}`);
+        
+        // Create Gemini connection manager
+        const geminiManager = new GeminiConnectionManager(
+            context,
+            deviceWs,
+            connectionState,
+            audioState,
+            ttsState,
+            imageState
+        );
 
-                // Only send RESPONSE.COMPLETE if we actually sent audio and weren't just handling a function call
-                if (responseCreatedSent) {
-                    console.log("Device => Sending RESPONSE.COMPLETE");
-                    ttsState.reset(); // Reset Opus buffer
-                    responseCreatedSent = false; // Reset flag for next response
+        // Create Flash 2.5 session with callbacks from Gemini manager
+        createFlash25Session(connectionState.sessionId, user.user_id, geminiManager.deviceCallbacks);
 
-                    try {
-                        // Fetch latest device info (like volume) before signaling completion
-                        const devInfo = await getDeviceInfo(supabase, user.user_id).catch(() => null); // Handle potential fetch error
-                        if (deviceWs.readyState === WSWebSocket.OPEN) {
-                            deviceWs.send(JSON.stringify({
-                                type: "server",
-                                msg: "RESPONSE.COMPLETE",
-                                volume_control: devInfo?.volume ?? 100, // Send last known or default volume
-                                pitch_factor: user.personality?.pitch_factor ?? 1,
-                            }));
-                        }
-                    } catch (err) {
-                        console.error("Error sending RESPONSE.COMPLETE:", err);
-                        // Still try to send basic complete message if fetching device info failed
-                        if (deviceWs.readyState === WSWebSocket.OPEN) {
-                            deviceWs.send(JSON.stringify({ type: "server", msg: "RESPONSE.COMPLETE" }));
-                        }
-                    }
-                } else {
-                    console.log("Generation complete, but no audio was sent (likely function call only or text response). Not sending RESPONSE.COMPLETE.");
-                }
-            } // --- End Generation Complete Check ---
+        // Create device message handler
+        const deviceMessageHandler = new DeviceMessageHandler(
+            deviceWs,
+            connectionState,
+            audioState,
+            imageState,
+            geminiManager
+        );
 
+        // Initial device setup
+        let currentVolume: number | null = null;
+        let isOta = false;
+        let isReset = false;
 
-            // --- Handle Transcriptions (User & Assistant) ---
-            if (msg.inputTranscription?.text) {
-                // Log partial transcription
-                // console.log("Gemini => User partial transcription:", msg.inputTranscription.text); // Can be verbose
-                if (msg.inputTranscription.finished && msg.inputTranscription.text.trim()) {
-                    console.log("Gemini => User final transcription:", msg.inputTranscription.text);
-                    // Store final user utterance in DB
-                    await addConversation(supabase, "user", msg.inputTranscription.text, user)
-                        .catch(err => console.error("DB Error (User Conv):", err));
-                }
+        try {
+            const deviceInfo = await getDeviceInfo(supabase, user.user_id);
+            if (deviceInfo) {
+                currentVolume = deviceInfo.volume ?? 100;
+                isOta = deviceInfo.is_ota || false;
+                isReset = deviceInfo.is_reset || false;
+                logger.log(`Fetched initial device info: Volume=${currentVolume}, OTA=${isOta}, Reset=${isReset}`);
+            } else {
+                currentVolume = 100;
+                logger.warn(`No device info found for user ${user.user_id}, defaulting volume to 100.`);
             }
+            deviceWs.send(JSON.stringify({
+                type: "auth",
+                volume_control: currentVolume,
+                pitch_factor: user.personality?.pitch_factor ?? 1,
+                is_ota: isOta,
+                is_reset: isReset,
+            }));
+        } catch (err) {
+            logger.error("Failed to get initial device info:", err);
+            currentVolume = 100;
+            deviceWs.send(JSON.stringify({
+                type: "auth",
+                volume_control: 100,
+                pitch_factor: 1,
+                is_ota: false,
+                is_reset: false,
+            }));
+        }
 
-            if (msg.outputTranscription?.text) {
-                // Log partial assistant transcription
-                // console.log("Gemini => Assistant partial transcription:", msg.outputTranscription.text); // Can be verbose
-                if (msg.outputTranscription.finished && msg.outputTranscription.text.trim()) {
-                    console.log("Gemini => Assistant final transcription:", msg.outputTranscription.text);
-                    // Store final assistant utterance in DB
-                    await addConversation(supabase, "assistant", msg.outputTranscription.text, user)
-                        .catch(err => console.error("DB Error (Asst Conv):", err));
-                }
-            } // --- End Transcription Handling ---
+        // Prepare for Gemini connection
+        const isDoctor = (user.user_info?.user_type === "doctor");
+        const chatHistory = await getChatHistory(
+            supabase,
+            user.user_id,
+            user.personality?.key ?? null,
+            isDoctor,
+        ).catch(err => {
+            logger.error("Failed to get chat history:", err);
+            return [];
+        });
 
-            // Handle potential GoAway message
-            if (msg.goAway) {
-                console.warn("Gemini => Received goAway:", JSON.stringify(msg.goAway));
-                // Consider closing the connection based on the reason
-                if (deviceWs.readyState === WSWebSocket.OPEN) {
-                    deviceWs.close(1011, `Gemini requested disconnect: ${msg.goAway.reason || 'Unknown reason'}`);
-                }
-            }
+        const systemPromptText = createSystemPrompt(chatHistory, context, currentVolume) || "You are a helpful assistant.";
+        const firstMessage = createFirstMessage(chatHistory, context);
 
-        } // --- End handleGeminiMessage ---
+        // Build full system prompt
+        const fullSystemPrompt = geminiManager['buildFullSystemPrompt'](systemPromptText);
 
+        // Connect to Gemini
+        await geminiManager.connect(fullSystemPrompt, firstMessage);
 
-        // deviceWs => messages from device (Merged Handler)
+        // Set up device event handlers
         deviceWs.on("message", async (raw: RawData, isBinary: boolean) => {
-            if (!pipelineActive || deviceClosed) return;
+            await deviceMessageHandler.handleMessage(raw, isBinary);
+        });
 
-            // Debug: Log all incoming messages
-            if (isBinary) {
-                const rawSize = raw instanceof ArrayBuffer ? raw.byteLength :
-                               Buffer.isBuffer(raw) ? raw.length :
-                               Array.isArray(raw) ? raw.reduce((sum, buf) => sum + buf.length, 0) : 0;
-                //console.log(`Device => Received binary message: ${rawSize} bytes`);
-            } else {
-                const rawString = raw.toString("utf-8");
-                if (rawString.length > 1000) {
-                    console.log(`Device => Received large text message: ${rawString.length} chars`);
-                } else {
-                    console.log(`Device => Received text message: ${rawString.substring(0, 200)}${rawString.length > 200 ? '...' : ''}`);
-                }
-            }
-
-            if (isBinary) {
-                // --- Handle Mic Audio Chunk (ADPCM Compressed or Raw PCM) ---
-                let audioChunk: Uint8Array | null = null;
-
-                if (raw instanceof ArrayBuffer) {
-                    audioChunk = new Uint8Array(raw);
-                } else if (Buffer.isBuffer(raw)) { // Check if it's a Node.js Buffer
-                    // Create a Uint8Array view over the Buffer's underlying ArrayBuffer
-                    audioChunk = new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
-                } else {
-                    console.warn("Received unexpected binary data format (not ArrayBuffer or Buffer). Ignoring.", typeof raw);
-                    // Optionally handle Buffer[] case if needed, though less common here
-                    // For now, we ignore other formats
-                }
-
-                if (!audioChunk) {
-                    return; // Don't process if we couldn't interpret the data
-                }
-
-                // Decompress ADPCM to PCM if ADPCM is enabled
-                let pcmChunk: Uint8Array;
-                if (ADPCM_ENABLED) {
-                    // Decompress ADPCM data to PCM
-                    pcmChunk = adpcmProcessor.decodeADPCMChunk(audioChunk);
-                    lastCompressionRatio = pcmChunk.length / audioChunk.length;
-
-                    // Debug: Log compression ratio (only occasionally to avoid spam)
-                    if (audioChunk.length > 0 && Math.random() < 0.01) { // Log ~1% of chunks
-                        console.log(`ADPCM: Decompressed ${audioChunk.length} bytes to ${pcmChunk.length} bytes (${lastCompressionRatio?.toFixed(1)}x expansion)`);
-                    }
-                } else {
-                    // Use raw PCM data
-                    pcmChunk = audioChunk;
-                    lastCompressionRatio = undefined;
-                }
-
-                // Accumulate buffer
-                const combined = new Uint8Array(micAccum.length + pcmChunk.length);
-                combined.set(micAccum, 0);
-                combined.set(pcmChunk, micAccum.length);
-                micAccum = combined;
-
-                // Process and send chunks of sufficient size
-                while (micAccum.length >= MIC_ACCUM_CHUNK_SIZE) {
-                    const chunkToSend = micAccum.slice(0, MIC_ACCUM_CHUNK_SIZE);
-                    micAccum = micAccum.slice(MIC_ACCUM_CHUNK_SIZE); // Keep the remainder
-
-                    // Debug: Log audio chunk info periodically
-                    //console.log(`Audio chunk: ${chunkToSend.length} bytes, first few samples: ${Array.from(chunkToSend.slice(0, 8)).join(',')}`);
-
-                    // Apply filtering and gain to the audio chunk
-                    const filteredChunk = new Uint8Array(chunkToSend);
-                    micFilter.processAudioInPlace(filteredChunk);
-
-                    // Use the filtered audio (with gain applied)
-                    const audioToSend = filteredChunk;
-
-                    // Add processed audio data to debug session (after filtering/gain)
-                    audioDebugManager.addAudioData(sessionId, audioToSend, lastCompressionRatio);
-
-                    // Base64 encode the audio
-                    const b64 = Buffer.from(audioToSend).toString("base64");
-
-                    // Send to Gemini if connected
-                    if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN) {
-                        const gemMsg = {
-                            realtime_input: {
-                                media_chunks: [
-                                    { data: b64, mime_type: `audio/pcm;rate=${MIC_SAMPLE_RATE}` }
-                                ]
-                            }
-                        };
-                        try {
-                            geminiWs.send(JSON.stringify(gemMsg));
-                            // Debug: Log successful sends periodically
-                            //console.log(`Successfully sent audio chunk to Gemini: ${b64.length} chars base64`);
-
-                        } catch (err) {
-                            console.error("Failed to send audio chunk to Gemini:", err);
-                        }
-                    } else {
-                        // Stop processing if Gemini disconnects
-                        console.warn("Cannot send audio chunk, Gemini WS not open.");
-                        micAccum = new Uint8Array(0); // Clear buffer if connection lost
-                        break;
-                    }
-                } // --- End while loop for chunk processing ---
-
-            } else {
-                // --- Handle Text Messages from Device (JSON commands, image data) ---
-                let msgObj;
-                try {
-                    const rawString = raw.toString("utf-8");
-                    // Log incoming message type and size for debugging
-                    if (rawString.length > 1000) {
-                        console.log(`Device => Received large message (${rawString.length} chars), likely image data`);
-                        // Check if it starts with image data pattern
-                        if (rawString.includes('"type":"image"')) {
-                            console.log("Device => Confirmed image message detected");
-                        }
-                    } else {
-                        console.log(`Device => Received message: ${rawString.substring(0, 200)}${rawString.length > 200 ? '...' : ''}`);
-                    }
-
-                    msgObj = JSON.parse(rawString);
-                } catch (err) {
-                    console.error("Device JSON parse error:", err, "Raw length:", raw.toString("utf-8").length);
-                    console.error("Raw preview:", raw.toString("utf-8").substring(0, 500));
-                    return; // Ignore malformed messages
-                }
-
-                // Wrap the actual message processing logic in a try/catch
-                try {
-                    // --- Handle Image Chunk Data ---
-                    if (msgObj.type === "image_chunk") {
-                        console.log(`Device => Received image chunk ${msgObj.chunk_index + 1}/${msgObj.total_chunks}`);
-
-                        if (!waitingForImage || !pendingVisionCall) {
-                            console.warn(`Device => Received image chunk but not waiting for image. Ignoring.`);
-                            return;
-                        }
-
-                        // Initialize chunk assembly if this is the first chunk
-                        if (!imageChunkAssembly) {
-                            imageChunkAssembly = {
-                                chunks: new Map(),
-                                totalChunks: msgObj.total_chunks,
-                                receivedCount: 0,
-                                timestamp: Date.now()
-                            };
-
-                            // Set timeout for chunk assembly
-                            chunkTimeoutId = setTimeout(() => {
-                                console.error(`Image chunk assembly timeout after ${IMAGE_CHUNK_TIMEOUT_MS}ms. Received ${imageChunkAssembly?.receivedCount}/${imageChunkAssembly?.totalChunks} chunks.`);
-
-                                // Clean up and send error response
-                                imageChunkAssembly = null;
-                                waitingForImage = false;
-
-                                if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN && pendingVisionCall?.id) {
-                                    const functionResponsePayload = {
-                                        functionResponses: [{
-                                            id: pendingVisionCall.id,
-                                            name: "GetVision",
-                                            response: { result: "Image capture failed: Incomplete chunk transmission." }
-                                        }]
-                                    };
-                                    const functionResponse = { toolResponse: functionResponsePayload };
-                                    try {
-                                        geminiWs.send(JSON.stringify(functionResponse));
-                                        console.log("Gemini Live => Sent chunk timeout error response");
-                                    } catch (err) {
-                                        console.error("Failed to send chunk timeout error response to Gemini:", err);
-                                    }
-                                }
-
-                                pendingVisionCall = null;
-                                chunkTimeoutId = null;
-                            }, IMAGE_CHUNK_TIMEOUT_MS);
-                        }
-
-                        // Store the chunk
-                        imageChunkAssembly.chunks.set(msgObj.chunk_index, msgObj.data);
-                        imageChunkAssembly.receivedCount++;
-
-                        console.log(`Device => Stored chunk ${msgObj.chunk_index}, total received: ${imageChunkAssembly.receivedCount}/${imageChunkAssembly.totalChunks}`);
-
-                        // Check if we have all chunks
-                        if (imageChunkAssembly.receivedCount === imageChunkAssembly.totalChunks) {
-                            console.log(`Device => All chunks received, assembling image...`);
-
-                            // Clear timeout
-                            if (chunkTimeoutId) {
-                                clearTimeout(chunkTimeoutId);
-                                chunkTimeoutId = null;
-                            }
-
-                            // Assemble the complete base64 image
-                            let completeBase64 = "";
-                            for (let i = 0; i < imageChunkAssembly.totalChunks; i++) {
-                                const chunk = imageChunkAssembly.chunks.get(i);
-                                if (!chunk) {
-                                    console.error(`Missing chunk ${i} during assembly!`);
-                                    imageChunkAssembly = null;
-                                    waitingForImage = false;
-                                    pendingVisionCall = null;
-                                    return;
-                                }
-                                completeBase64 += chunk;
-                            }
-
-                            console.log(`Device => Image assembly complete - ${completeBase64.length} characters`);
-
-                            // Clean up chunk assembly
-                            imageChunkAssembly = null;
-
-                            // Process the complete image (reuse existing logic)
-                            await processCompleteImage(completeBase64);
-                        }
-
-                        return; // Don't process further for chunk messages
-                    }
-
-                    // --- Handle Image Complete Message ---
-                    else if (msgObj.type === "image_complete") {
-                        console.log(`Device => Received image_complete message for ${msgObj.total_chunks} chunks`);
-                        // This is just a confirmation message, actual processing happens when all chunks are received
-                        return;
-                    }
-
-                    // --- Handle Legacy Single Image Data ---
-                    else if (msgObj.type === "image") {
-                        console.log(`Device => Processing legacy single image message. waitingForImage: ${waitingForImage}, pendingVisionCall: ${!!pendingVisionCall}`);
-
-                        if (!waitingForImage || !pendingVisionCall) {
-                            console.warn(`Device => Received image but not waiting for one. waitingForImage: ${waitingForImage}, pendingVisionCall: ${!!pendingVisionCall}`);
-                            return; // Don't process unexpected images
-                        }
-
-                        console.log(`Device => Received legacy image data for GetVision ID: ${pendingVisionCall.id}`);
-                        console.log(`Device => Image capture successful, processing with Flash 2.5...`);
-
-                        const base64Jpeg = msgObj.data as string;
-                        await processCompleteImage(base64Jpeg);
-
-                    } // --- End Handle Image Data ---
-
-                    // --- Handle Control Messages (e.g., end_of_speech, interrupt - from Script 2) ---
-                    else if (msgObj.type === "instruction" || msgObj.type === "server") { // Accept both types for flexibility
-                        if (msgObj.msg === "end_of_speech") {
-                            console.log("Device => End of Speech detected.");
-                            // Flush any remaining audio in the buffer
-                            if (micAccum.length > 0 && isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN) {
-                                console.log(`Flushing remaining ${micAccum.length} bytes of audio.`);
-
-                                // Apply filtering and gain to the final chunk
-                                const finalChunk = new Uint8Array(micAccum);
-                                micFilter.processAudioInPlace(finalChunk);
-
-                                // Add final processed audio to debug session
-                                audioDebugManager.addAudioData(sessionId, finalChunk, lastCompressionRatio);
-
-                                const b64 = Buffer.from(finalChunk).toString("base64");
-                                micAccum = new Uint8Array(0); // Clear after processing
-
-                                const gemMsg = {
-                                    realtime_input: { media_chunks: [{ data: b64, mime_type: `audio/pcm;rate=${MIC_SAMPLE_RATE}` }] }
-                                };
-                                try {
-                                    geminiWs.send(JSON.stringify(gemMsg));
-                                    console.log("Successfully sent final audio chunk to Gemini");
-                                } catch (err) {
-                                    console.error("Failed to send final audio chunk to Gemini:", err);
-                                }
-                            } else {
-                                console.log("No remaining audio to flush or Gemini not connected");
-                                micAccum = new Uint8Array(0); // Clear buffer even if not sent
-                            }
-
-                            // Signal Turn Complete to Gemini
-                            if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN) {
-                                console.log("Gemini Live => Signaling Turn Complete (End of Speech).");
-                                const finalizeTurn = {
-                                    clientContent: { turns: [], turnComplete: true } // Empty turns, just signal completion
-                                };
-                                try {
-                                    geminiWs.send(JSON.stringify(finalizeTurn));
-                                } catch (err) {
-                                    console.error("Failed to send Turn Complete message to Gemini:", err);
-                                }
-                            }
-                            // Acknowledge device (optional but good practice)
-                            if (deviceWs.readyState === WSWebSocket.OPEN) {
-                                deviceWs.send(JSON.stringify({ type: "server", msg: "AUDIO.COMMITTED" }));
-                            }
-
-                        } else if (msgObj.msg === "INTERRUPT") {
-                            console.log("Device => INTERRUPT received.");
-                            micAccum = new Uint8Array(0); // Discard any buffered audio on interrupt
-                            ttsState.reset(); // Stop any ongoing TTS buffering
-                            responseCreatedSent = false; // Reset TTS flag
-                            ttsTextBuffer = ""; // Clear TTS text buffer on interrupt
-
-                            // Clear any pending TTS timeout
-                            if (ttsTimeout) {
-                                clearTimeout(ttsTimeout);
-                                ttsTimeout = null;
-                                console.log("Device => Cleared pending TTS timeout due to interrupt");
-                            }
-
-
-                            // Signal interruption/turn completion to Gemini (might be optional depending on desired interrupt behavior)
-                            if (isGeminiConnected && geminiWs?.readyState === WSWebSocket.OPEN) {
-                                console.log("Gemini Live => Signaling Turn Complete (Interrupt).");
-                                // Sending turnComplete might make Gemini stop its current output and listen again.
-                                const interruptTurn = {
-                                    clientContent: { turns: [], turnComplete: true }
-                                };
-                                try {
-                                    geminiWs.send(JSON.stringify(interruptTurn));
-                                } catch (err) {
-                                    console.error("Failed to send Turn Complete (Interrupt) to Gemini:", err);
-                                }
-                            }
-                            // Acknowledge device (optional)
-                            // if (deviceWs.readyState === WSWebSocket.OPEN) {
-                            //     deviceWs.send(JSON.stringify({ type: "server", msg: "INTERRUPT.ACK" }));
-                            // }
-                        }
-                        // Handle other instructions if needed
-                        // else if (msgObj.msg === "some_other_command") { ... }
-
-                    } // --- End Handle Control Messages ---
-
-                    // --- Handle other message types if necessary ---
-                    // else if (msgObj.type === "status") { ... }
-
-                } catch (err) {
-                    // Catch errors within the non-binary message handling
-                    console.error("Error processing text message from device:", err);
-                    // If an error happens during image processing *after* upload started,
-                    // ensure we clear the pending state.
-                    if (msgObj.type === "image" && waitingForImage) {
-                        waitingForImage = false;
-                        pendingVisionCall = null;
-                         photoCaptureFailed = false; // Reset flag
-                    }
-                }
-            } // --- End Text Message Handling ---
-        }); // --- End deviceWs.on("message") ---
-
-        // ---------------------------------------------------------------------------
-        // deviceWs => Error and Close Handlers
-        // ---------------------------------------------------------------------------
         deviceWs.on("error", (err) => {
-            console.error("Device WS error:", err);
-            if (!deviceClosed) {
-                deviceClosed = true; // Prevent further actions
-                pipelineActive = false;
-                console.log("Closing Gemini WS due to device error.");
-                // If waiting for a retry, cancel it
-                if (retryTimeoutId) {
-                    console.log("Device error, cancelling pending Gemini reconnect.");
-                    clearTimeout(retryTimeoutId);
-                    retryTimeoutId = null;
+            logger.error("Device WS error:", err);
+            if (!connectionState.deviceClosed) {
+                connectionState.deviceClosed = true;
+                connectionState.pipelineActive = false;
+                logger.log("Closing Gemini WS due to device error.");
+                
+                if (connectionState.retryTimeoutId) {
+                    logger.log("Device error, cancelling pending Gemini reconnect.");
+                    clearTimeout(connectionState.retryTimeoutId);
+                    connectionState.retryTimeoutId = null;
                 }
-                // End audio debug session on error
-                audioDebugManager.endSession(sessionId, "device_error").catch(err =>
-                    console.error("Failed to end audio debug session on device error:", err)
+                
+                audioDebugManager.endSession(connectionState.sessionId, "device_error").catch(err =>
+                    logger.error("Failed to end audio debug session on device error:", err)
                 );
-                geminiWs?.close(1011, "Device error");
+                
+                geminiManager.close();
             }
         });
 
         deviceWs.on("close", async (code, reason) => {
-            if (deviceClosed) return; // Avoid duplicate logging/actions
-            console.log(`Device WS closed => Code: ${code}, Reason: ${reason.toString()}`);
-            deviceClosed = true;
-            pipelineActive = false;
+            if (connectionState.deviceClosed) return;
+            logger.log(`Device WS closed => Code: ${code}, Reason: ${reason.toString()}`);
+            connectionState.deviceClosed = true;
+            connectionState.pipelineActive = false;
 
             // Clean up image chunk assembly
-            if (chunkTimeoutId) {
-                clearTimeout(chunkTimeoutId);
-                chunkTimeoutId = null;
+            if (imageState.chunkTimeoutId) {
+                clearTimeout(imageState.chunkTimeoutId);
+                imageState.chunkTimeoutId = null;
             }
-            imageChunkAssembly = null;
+            imageState.imageChunkAssembly = null;
 
             // If waiting for a retry, cancel it
-            if (retryTimeoutId) {
-                console.log("Device closed, cancelling pending Gemini reconnect.");
-                clearTimeout(retryTimeoutId);
-                retryTimeoutId = null;
+            if (connectionState.retryTimeoutId) {
+                logger.log("Device closed, cancelling pending Gemini reconnect.");
+                clearTimeout(connectionState.retryTimeoutId);
+                connectionState.retryTimeoutId = null;
             }
 
             // Log session duration
-            if (sessionStartTime > 0) {
-                const durationSeconds = Math.floor((Date.now() - sessionStartTime) / 1000);
-                console.log(`Session duration: ${durationSeconds} seconds.`);
+            if (connectionState.sessionStartTime > 0) {
+                const durationSeconds = Math.floor((Date.now() - connectionState.sessionStartTime) / 1000);
+                logger.log(`Session duration: ${durationSeconds} seconds.`);
                 await updateUserSessionTime(supabase, user, durationSeconds)
-                    .catch(err => console.error("DB Error (Session Time):", err));
+                    .catch(err => logger.error("DB Error (Session Time):", err));
             }
 
-            // Close Gemini connection if it's still open
-            if (geminiWs && geminiWs.readyState !== WSWebSocket.CLOSED && geminiWs.readyState !== WSWebSocket.CLOSING) {
-                console.log("Closing Gemini WS because device disconnected.");
-                geminiWs.close(1000, "Device disconnected");
-            }
-            geminiWs = null; // Ensure reference is cleared
+            // Close Gemini connection
+            geminiManager.close();
 
             // End audio debug session
-            await audioDebugManager.endSession(sessionId, "connection_closed");
+            await audioDebugManager.endSession(connectionState.sessionId, "connection_closed");
 
             // Destroy Flash 2.5 session
-            console.log(`Destroying Flash 2.5 session: ${sessionId}`);
-            destroyFlash25Session(sessionId);
+            logger.log(`Destroying Flash 2.5 session: ${connectionState.sessionId}`);
+            destroyFlash25Session(connectionState.sessionId);
         });
-
-        // ---------------------------------------------------------------------------
-        // Finally, Initiate the connection to Gemini Live
-        // ---------------------------------------------------------------------------
-        connectToGeminiLive();
-
-    }); // --- End wss.on("connection") ---
+    });
 }

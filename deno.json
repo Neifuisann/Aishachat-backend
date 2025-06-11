@@ -54,7 +54,8 @@
     "@supabase/supabase-js": "npm:@supabase/supabase-js@^2.48.1",
     "ws": "npm:ws@^8.18.0",
     "@types/ws": "npm:@types/ws@^8.5.12",
-    "jimp": "npm:jimp@^0.22.12"
+    "jimp": "npm:jimp@^0.22.12",
+    "msedge-tts": "npm:msedge-tts@^2.0.0"
   },
   "deploy": {
     "project": "200035d0-7545-471a-8f69-14719fc34782",

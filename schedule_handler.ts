@@ -36,14 +36,41 @@ export async function ListSchedules(
 
         const schedules = data as ISchedule[];
         const timeInfo = getCurrentTimeUTC7();
-        
+
         const result: IScheduleWithCurrentTime = {
             schedules,
             current_time_utc7: timeInfo.current_time_utc7,
             current_date_utc7: timeInfo.current_date_utc7
         };
 
-        const successMsg = `Retrieved ${schedules.length} active schedule(s) for user ${userId}. Current time (UTC+7): ${timeInfo.current_time_utc7}`;
+        // Create detailed message with all schedule information
+        let successMsg = `Retrieved ${schedules.length} active schedule(s) for user ${userId}. Current time (UTC+7): ${timeInfo.current_time_utc7}`;
+
+        if (schedules.length > 0) {
+            successMsg += "\n\nSchedule Details:";
+            schedules.forEach((schedule, index) => {
+                successMsg += `\n${index + 1}. "${schedule.title}"`;
+                successMsg += ` - Time: ${schedule.scheduled_time}`;
+                successMsg += ` - Type: ${schedule.schedule_type}`;
+
+                if (schedule.description) {
+                    successMsg += ` - Description: ${schedule.description}`;
+                }
+
+                if (schedule.target_date) {
+                    successMsg += ` - Target Date: ${schedule.target_date}`;
+                }
+
+                if (schedule.schedule_pattern) {
+                    successMsg += ` - Pattern: ${JSON.stringify(schedule.schedule_pattern)}`;
+                }
+
+                successMsg += ` - Created: ${new Date(schedule.created_at).toLocaleDateString()}`;
+            });
+        } else {
+            successMsg += "\n\nNo active schedules found.";
+        }
+
         console.log(successMsg);
         return { success: true, data: result, message: successMsg };
 
@@ -113,7 +140,8 @@ export async function AddSchedule(
             schedule_type: scheduleType,
             schedule_pattern: schedulePattern || null,
             target_date: targetDate,
-            is_active: true
+            is_active: true,
+            archive: false
         };
 
         const { data, error } = await supabase
@@ -241,6 +269,61 @@ export async function UpdateSchedule(
 
     } catch (err) {
         console.error(`Unexpected error in UpdateSchedule for user ${userId}:`, err);
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        return { success: false, message: `An unexpected error occurred: ${errorMessage}` };
+    }
+}
+
+/**
+ * Marks a schedule as complete by archiving it
+ * @param supabase - The Supabase client instance scoped to the user
+ * @param userId - The ID of the user completing the schedule
+ * @param scheduleId - The ID of the schedule to complete
+ * @returns An object containing success status, completed schedule data, and message
+ */
+export async function CompleteSchedule(
+    supabase: SupabaseClient,
+    userId: string,
+    scheduleId: string
+): Promise<{ success: boolean; schedule?: ISchedule; message: string }> {
+    console.log(`Attempting to complete schedule ${scheduleId} for user ${userId}`);
+
+    if (!scheduleId || scheduleId.trim().length === 0) {
+        const errorMsg = "Schedule ID is required for completion";
+        console.error(errorMsg);
+        return { success: false, message: errorMsg };
+    }
+
+    try {
+        const { data, error } = await supabase
+            .from('schedules')
+            .update({
+                archive: true,
+                is_active: false,
+                updated_at: new Date().toISOString()
+            })
+            .eq('schedule_id', scheduleId)
+            .eq('user_id', userId) // Ensure user can only complete their own schedules
+            .select('*')
+            .single();
+
+        if (error) {
+            console.error(`Supabase error completing schedule ${scheduleId} for user ${userId}:`, error);
+            return { success: false, message: `Database error: ${error.message}` };
+        }
+
+        if (!data) {
+            const errorMsg = `Schedule ${scheduleId} not found or not owned by user ${userId}`;
+            console.warn(errorMsg);
+            return { success: false, message: errorMsg };
+        }
+
+        const successMsg = `Successfully completed and archived schedule "${data.title}" for user ${userId}`;
+        console.log(successMsg);
+        return { success: true, schedule: data as ISchedule, message: successMsg };
+
+    } catch (err) {
+        console.error(`Unexpected error in CompleteSchedule for user ${userId}:`, err);
         const errorMessage = err instanceof Error ? err.message : String(err);
         return { success: false, message: `An unexpected error occurred: ${errorMessage}` };
     }

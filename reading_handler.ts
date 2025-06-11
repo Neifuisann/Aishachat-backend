@@ -2,594 +2,729 @@ import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import "./types.d.ts";
 
 /**
- * Unified reading management function that handles book reading, history, search, and settings
- * through a modal interface.
- *
- * @param supabase - The Supabase client instance scoped to the user
- * @param userId - The ID of the user
- * @param mode - The reading operation mode: "History", "Read", "Search", or "Settings"
- * @param action - The action to perform within the selected mode
- * @param bookName - Name of the book (required for History, Read, Search modes)
- * @param pageNumber - Page number for Read mode with "GoTo" action
- * @param keyword - Search keyword for Search mode
- * @param readingMode - Reading mode for Settings ("paragraphs", "sentences", "fullpage")
- * @param readingAmount - Amount to read (number of paragraphs/sentences)
- * @returns An object containing success status and relevant data or error message
+ * Enhanced Reading Manager with Supabase integration and better user experience
+ * 
+ * Key improvements:
+ * - Fetches books from Supabase books table
+ * - Reads content from Supabase storage bucket
+ * - Implements recap system for continuity
+ * - Better navigation with categories and search
+ * - Improved AI guidance through prompts
  */
 export async function ReadingManager(
     supabase: SupabaseClient,
     userId: string,
-    mode: "History" | "Read" | "Search" | "Settings",
+    mode: "Browse" | "Continue" | "Search" | "Navigate" | "Settings" | "Bookmark",
     action: string,
-    bookName?: string | null,
+    bookId?: string | null,
+    searchQuery?: string | null,
     pageNumber?: number | null,
-    keyword?: string | null,
     readingMode?: "paragraphs" | "sentences" | "fullpage" | null,
     readingAmount?: number | null
 ): Promise<{ success: boolean; data?: any; message: string }> {
-    console.log(`ReadingManager called: mode=${mode}, action=${action}, userId=${userId}, bookName=${bookName}`);
-
-    // Validate mode and action
-    if (!["History", "Read", "Search", "Settings"].includes(mode)) {
-        return { success: false, message: "Invalid mode. Must be 'History', 'Read', 'Search', or 'Settings'." };
-    }
+    console.log(`ReadingManager called: mode=${mode}, action=${action}, userId=${userId}`);
 
     try {
-        // Handle History mode
-        if (mode === "History") {
-            if (action === "Check") {
-                if (!bookName || typeof bookName !== 'string') {
-                    return { success: false, message: "bookName is required for History Check." };
-                }
-                return await getReadingHistory(supabase, userId, bookName);
-            } else {
-                return { success: false, message: "Invalid action for History mode. Use 'Check'." };
-            }
+        switch (mode) {
+            case "Browse":
+                return await handleBrowseMode(supabase, userId, action);
+            
+            case "Continue":
+                return await handleContinueMode(supabase, userId, bookId);
+            
+            case "Search":
+                return await handleSearchMode(supabase, userId, searchQuery);
+            
+            case "Navigate":
+                return await handleNavigateMode(supabase, userId, bookId, action, pageNumber);
+            
+            case "Settings":
+                return await handleSettingsMode(supabase, userId, action, readingMode, readingAmount);
+            
+            case "Bookmark":
+                return await handleBookmarkMode(supabase, userId, bookId, action, pageNumber);
+            
+            default:
+                return { success: false, message: "Invalid mode selected." };
         }
-
-        // Handle Read mode
-        else if (mode === "Read") {
-            if (!bookName || typeof bookName !== 'string') {
-                return { success: false, message: "bookName is required for Read mode." };
-            }
-
-            if (action === "Continue") {
-                return await continueReading(supabase, userId, bookName);
-            } else if (action === "Start") {
-                return await startReading(supabase, userId, bookName);
-            } else if (action === "GoTo") {
-                if (typeof pageNumber !== 'number' || pageNumber < 1) {
-                    return { success: false, message: "Valid pageNumber is required for Read GoTo action." };
-                }
-                return await readSpecificPage(supabase, userId, bookName, pageNumber);
-            } else {
-                return { success: false, message: "Invalid action for Read mode. Use 'Continue', 'Start', or 'GoTo'." };
-            }
-        }
-
-        // Handle Search mode
-        else if (mode === "Search") {
-            if (action === "Find") {
-                if (!bookName || typeof bookName !== 'string') {
-                    return { success: false, message: "bookName is required for Search Find." };
-                }
-                if (!keyword || typeof keyword !== 'string') {
-                    return { success: false, message: "keyword is required for Search Find." };
-                }
-                return await searchInBook(supabase, userId, bookName, keyword);
-            } else {
-                return { success: false, message: "Invalid action for Search mode. Use 'Find'." };
-            }
-        }
-
-        // Handle Settings mode
-        else if (mode === "Settings") {
-            if (action === "Get") {
-                return await getReadingSettings(supabase, userId);
-            } else if (action === "Set") {
-                if (!readingMode || !["paragraphs", "sentences", "fullpage"].includes(readingMode)) {
-                    return { success: false, message: "Valid readingMode is required for Settings Set." };
-                }
-                if (readingMode !== "fullpage" && (typeof readingAmount !== 'number' || readingAmount < 1)) {
-                    return { success: false, message: "Valid readingAmount is required for paragraphs/sentences mode." };
-                }
-                return await setReadingSettings(supabase, userId, readingMode, readingAmount || 1);
-            } else {
-                return { success: false, message: "Invalid action for Settings mode. Use 'Get' or 'Set'." };
-            }
-        }
-
-        return { success: false, message: "Invalid mode/action combination." };
-
     } catch (err) {
-        console.error(`Unexpected error in ReadingManager for user ${userId}:`, err);
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        return { success: false, message: `An unexpected error occurred: ${errorMessage}` };
+        console.error(`Error in ReadingManager:`, err);
+        return { success: false, message: `An error occurred: ${err}` };
     }
 }
 
 /**
- * Get reading history for a specific book
+ * Browse books with categories
  */
-async function getReadingHistory(
+async function handleBrowseMode(
     supabase: SupabaseClient,
     userId: string,
-    bookName: string
+    action: string
 ): Promise<{ success: boolean; data?: any; message: string }> {
-    try {
-        const { data, error } = await supabase
-            .from('reading_history')
-            .select('*')
-            .eq('user_id', userId)
-            .eq('book_name', bookName)
-            .maybeSingle();
+    
+    if (action === "MyBooks") {
+        // Get user's reading history and private books
+        const { data: books, error } = await supabase
+            .from('books')
+            .select(`
+                book_id,
+                book_name,
+                author,
+                description,
+                total_pages,
+                is_public,
+                created_at
+            `)
+            .or(`is_public.eq.true,uploaded_by.eq.${userId}`)
+            .order('book_name');
 
         if (error) {
-            console.error(`Error getting reading history:`, error);
-            return { success: false, message: `Database error: ${error.message}` };
+            return { success: false, message: `Error fetching books: ${error.message}` };
         }
 
-        if (!data) {
+        // Get reading progress for each book
+        const { data: history } = await supabase
+            .from('reading_history')
+            .select('book_name, current_page, last_read_at')
+            .eq('user_id', userId);
+
+        const historyMap = new Map(history?.map(h => [h.book_name, h]) || []);
+
+        // Categorize books
+        const inProgress = [];
+        const notStarted = [];
+        const privateBooks = [];
+
+        for (const book of books || []) {
+            const progress = historyMap.get(book.book_name);
+            const bookInfo = {
+                ...book,
+                currentPage: progress?.current_page || 0,
+                lastRead: progress?.last_read_at,
+                progress: progress ? 
+                    `${Math.round((progress.current_page / book.total_pages) * 100)}%` : 
+                    "Not started"
+            };
+
+            if (!book.is_public) {
+                privateBooks.push(bookInfo);
+            } else if (progress && progress.current_page > 0) {
+                inProgress.push(bookInfo);
+            } else {
+                notStarted.push(bookInfo);
+            }
+        }
+
+        let message = "📚 **Your Library**\n\n";
+        
+        if (inProgress.length > 0) {
+            message += "**Currently Reading:**\n";
+            inProgress.forEach((book, idx) => {
+                message += `${idx + 1}. "${book.book_name}"${book.author ? ` by ${book.author}` : ''} - Page ${book.currentPage}/${book.total_pages} (${book.progress})\n`;
+            });
+            message += "\n";
+        }
+
+        if (privateBooks.length > 0) {
+            message += "**Your Private Books:**\n";
+            privateBooks.forEach((book, idx) => {
+                message += `${idx + 1}. "${book.book_name}"${book.author ? ` by ${book.author}` : ''} - ${book.progress}\n`;
+            });
+            message += "\n";
+        }
+
+        if (notStarted.length > 0) {
+            message += "**Available Books:**\n";
+            notStarted.forEach((book, idx) => {
+                message += `${idx + 1}. "${book.book_name}"${book.author ? ` by ${book.author}` : ''}\n`;
+            });
+        }
+
+        message += "\n💡 **What would you like to do?**\n";
+        message += "• Say 'Continue reading [book name]' to resume\n";
+        message += "• Say 'Start reading [book name]' to begin a new book\n";
+        message += "• Say 'Search for [topic/author]' to find specific books";
+
+        return {
+            success: true,
+            data: { inProgress, privateBooks, notStarted, total: books?.length || 0 },
+            message
+        };
+
+    } else if (action === "Recent") {
+        // Get recently read books
+        const { data: recentHistory, error } = await supabase
+            .from('reading_history')
+            .select(`
+                book_name,
+                current_page,
+                total_pages,
+                last_read_at
+            `)
+            .eq('user_id', userId)
+            .order('last_read_at', { ascending: false })
+            .limit(5);
+
+        if (error) {
+            return { success: false, message: `Error fetching recent books: ${error.message}` };
+        }
+
+        if (!recentHistory || recentHistory.length === 0) {
             return {
                 success: true,
-                data: { hasHistory: false, currentPage: 0, totalPages: 0 },
-                message: `No reading history found for "${bookName}". This book hasn't been read yet.`
+                data: { recent: [] },
+                message: "You haven't read any books yet. Say 'Show me all books' to browse our library!"
+            };
+        }
+
+        let message = "📖 **Recently Read:**\n\n";
+        recentHistory.forEach((item, idx) => {
+            const progress = Math.round((item.current_page / item.total_pages) * 100);
+            const lastRead = new Date(item.last_read_at).toLocaleDateString();
+            message += `${idx + 1}. "${item.book_name}" - Page ${item.current_page}/${item.total_pages} (${progress}%) - Last read: ${lastRead}\n`;
+        });
+
+        message += "\n💡 Say 'Continue reading [book name]' to resume any book!";
+
+        return {
+            success: true,
+            data: { recent: recentHistory },
+            message
+        };
+    }
+
+    return { success: false, message: "Invalid browse action. Try 'My books' or 'Recent books'." };
+}
+
+/**
+ * Continue reading with recap
+ */
+async function handleContinueMode(
+    supabase: SupabaseClient,
+    userId: string,
+    bookId?: string | null
+): Promise<{ success: boolean; data?: any; message: string }> {
+    
+    if (!bookId) {
+        // Get the most recently read book
+        const { data: recent, error } = await supabase
+            .from('reading_history')
+            .select('book_name')
+            .eq('user_id', userId)
+            .order('last_read_at', { ascending: false })
+            .limit(1)
+            .single();
+
+        if (error || !recent) {
+            return { 
+                success: false, 
+                message: "No reading history found. Say 'Show me all books' to start reading!" 
+            };
+        }
+
+        // Get book ID from book name
+        const { data: book } = await supabase
+            .from('books')
+            .select('book_id')
+            .eq('book_name', recent.book_name)
+            .single();
+
+        bookId = book?.book_id;
+    }
+
+    // Get book details and reading progress
+    const { data: book, error: bookError } = await supabase
+        .from('books')
+        .select('*')
+        .eq('book_id', bookId)
+        .single();
+
+    if (bookError || !book) {
+        return { success: false, message: "Book not found." };
+    }
+
+    const { data: history, error: historyError } = await supabase
+        .from('reading_history')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('book_name', book.book_name)
+        .single();
+
+    if (historyError || !history || history.current_page === 0) {
+        return { 
+            success: false, 
+            message: `You haven't started reading "${book.book_name}" yet. Say 'Start reading ${book.book_name}' to begin!` 
+        };
+    }
+
+    // Generate recap of previous pages
+    const recap = await generateRecap(supabase, book, history.current_page);
+    
+    // Read current page
+    const pageContent = await readPageFromStorage(supabase, book.file_path, history.current_page);
+    
+    if (!pageContent.success) {
+        return pageContent;
+    }
+
+    // Get reading settings
+    const { data: settings } = await supabase
+        .from('reading_settings')
+        .select('*')
+        .eq('user_id', userId)
+        .single();
+
+    const readingMode = settings?.reading_mode || 'fullpage';
+    const readingAmount = settings?.reading_amount || 1;
+
+    // Apply reading mode to content
+    const processedContent = applyReadingMode(pageContent.data.content, readingMode, readingAmount);
+
+    let message = `📖 **"${book.book_name}" - Page ${history.current_page}/${book.total_pages}**\n\n`;
+    
+    if (recap) {
+        message += `📝 **Previously:** ${recap}\n\n`;
+        message += "---\n\n";
+    }
+
+    message += processedContent;
+    
+    message += "\n\n💡 **Options:**\n";
+    message += "• Say 'Next page' or 'Continue' to keep reading\n";
+    message += "• Say 'Previous page' to go back\n";
+    message += "• Say 'Go to page [number]' to jump to a specific page\n";
+    message += "• Say 'Bookmark this page' to save your spot";
+
+    // Update last read timestamp
+    await supabase
+        .from('reading_history')
+        .update({ last_read_at: new Date().toISOString() })
+        .eq('user_id', userId)
+        .eq('book_name', book.book_name);
+
+    return {
+        success: true,
+        data: {
+            book,
+            currentPage: history.current_page,
+            content: processedContent,
+            recap,
+            readingMode,
+            readingAmount
+        },
+        message
+    };
+}
+
+/**
+ * Generate a recap of previous pages
+ */
+async function generateRecap(
+    supabase: SupabaseClient,
+    book: any,
+    currentPage: number
+): Promise<string | null> {
+    if (currentPage <= 1) return null;
+
+    try {
+        // Read previous 1-2 pages for context
+        const pagesToRecap = Math.min(2, currentPage - 1);
+        let recapContent = "";
+
+        for (let i = currentPage - pagesToRecap; i < currentPage; i++) {
+            const pageResult = await readPageFromStorage(supabase, book.file_path, i);
+            if (pageResult.success) {
+                recapContent += pageResult.data.content + " ";
+            }
+        }
+
+        if (!recapContent) return null;
+
+        // Simple summarization: Take first few sentences
+        // In production, you might want to use an AI service for better summarization
+        const sentences = recapContent.match(/[^.!?]+[.!?]+/g) || [];
+        const summary = sentences.slice(0, 3).join(" ").trim();
+
+        return summary || null;
+    } catch (err) {
+        console.error("Error generating recap:", err);
+        return null;
+    }
+}
+
+/**
+ * Read page content from Supabase storage
+ */
+async function readPageFromStorage(
+    supabase: SupabaseClient,
+    filePath: string,
+    pageNumber: number
+): Promise<{ success: boolean; data?: any; message: string }> {
+    try {
+        // Download the book file from storage
+        const { data, error } = await supabase.storage
+            .from('books')
+            .download(filePath);
+
+        if (error) {
+            console.error("Storage error:", error);
+            return { success: false, message: `Error accessing book file: ${error.message}` };
+        }
+
+        // Convert blob to text
+        const text = await data.text();
+        
+        // Parse pages (assuming books are formatted with page markers or double line breaks)
+        const pages = parseBookIntoPages(text);
+        
+        if (pageNumber > pages.length || pageNumber < 1) {
+            return { 
+                success: false, 
+                message: `Page ${pageNumber} not found. Book has ${pages.length} pages.` 
             };
         }
 
         return {
             success: true,
             data: {
-                hasHistory: true,
-                currentPage: data.current_page,
-                totalPages: data.total_pages,
-                lastReadAt: data.last_read_at
+                content: pages[pageNumber - 1],
+                totalPages: pages.length
             },
-            message: `Reading history found for "${bookName}". Currently on page ${data.current_page} of ${data.total_pages}.`
+            message: `Successfully read page ${pageNumber} of ${pages.length}`
         };
-
     } catch (err) {
-        console.error(`Error in getReadingHistory:`, err);
-        return { success: false, message: `Error retrieving reading history: ${err}` };
-    }
-}
-
-/**
- * Continue reading from last position
- */
-async function continueReading(
-    supabase: SupabaseClient,
-    userId: string,
-    bookName: string
-): Promise<{ success: boolean; data?: any; message: string }> {
-    // First get reading history
-    const historyResult = await getReadingHistory(supabase, userId, bookName);
-    if (!historyResult.success) {
-        return historyResult;
-    }
-
-    const { hasHistory, currentPage } = historyResult.data;
-    
-    if (!hasHistory) {
-        return { success: false, message: `No reading history found for "${bookName}". Use "Start" action to begin reading.` };
-    }
-
-    // Read from current page
-    return await readSpecificPage(supabase, userId, bookName, currentPage);
-}
-
-/**
- * Start reading from the beginning
- */
-async function startReading(
-    supabase: SupabaseClient,
-    userId: string,
-    bookName: string
-): Promise<{ success: boolean; data?: any; message: string }> {
-    return await readSpecificPage(supabase, userId, bookName, 1);
-}
-
-/**
- * Read a specific page from a book
- */
-async function readSpecificPage(
-    supabase: SupabaseClient,
-    userId: string,
-    bookName: string,
-    pageNumber: number
-): Promise<{ success: boolean; data?: any; message: string }> {
-    try {
-        // Get user's reading settings
-        const settingsResult = await getReadingSettings(supabase, userId);
-        const settings = settingsResult.success ? settingsResult.data : { readingMode: "fullpage", readingAmount: 1 };
-
-        // Read the book content
-        const content = await readBookContent(bookName, pageNumber, settings.readingMode, settings.readingAmount);
-        if (!content.success) {
-            return content;
-        }
-
-        // Update reading progress
-        await updateReadingProgress(supabase, userId, bookName, pageNumber, content.data.totalPages);
-
-        return {
-            success: true,
-            data: {
-                content: content.data.content,
-                currentPage: pageNumber,
-                totalPages: content.data.totalPages,
-                readingMode: settings.readingMode,
-                readingAmount: settings.readingAmount
-            },
-            message: `Reading "${bookName}" - Page ${pageNumber} of ${content.data.totalPages}`
-        };
-
-    } catch (err) {
-        console.error(`Error in readSpecificPage:`, err);
+        console.error("Error reading from storage:", err);
         return { success: false, message: `Error reading book: ${err}` };
     }
 }
 
 /**
- * Parse book content with navigation markers
+ * Parse book text into pages
  */
-function parseBookWithMarkers(content: string): { pages: Array<{ pageNum: number; content: string; chapter?: string; sections?: string[] }>, totalPages: number } {
-    const lines = content.split('\n');
-    const pages: Array<{ pageNum: number; content: string; chapter?: string; sections?: string[] }> = [];
-
-    let currentPage: { pageNum: number; content: string; chapter?: string; sections?: string[] } | null = null;
-    let currentChapter: string | undefined = undefined;
-    let currentSections: string[] = [];
-
-    for (const line of lines) {
-        const trimmedLine = line.trim();
-
-        // Check for page marker
-        const pageMatch = trimmedLine.match(/^\[PAGE:(\d+)\]$/);
-        if (pageMatch) {
-            // Save previous page if exists
-            if (currentPage) {
-                pages.push(currentPage);
-            }
-
-            // Start new page
-            currentPage = {
-                pageNum: parseInt(pageMatch[1]),
-                content: "",
-                chapter: currentChapter,
-                sections: [...currentSections]
-            };
-            continue;
+function parseBookIntoPages(text: string): string[] {
+    // Check for page markers first
+    if (text.includes('[PAGE:')) {
+        const pages: string[] = [];
+        const pageRegex = /\[PAGE:(\d+)\]([\s\S]*?)(?=\[PAGE:\d+\]|$)/g;
+        let match;
+        
+        while ((match = pageRegex.exec(text)) !== null) {
+            pages[parseInt(match[1]) - 1] = match[2].trim();
         }
-
-        // Check for chapter marker
-        const chapterMatch = trimmedLine.match(/^\[CHAPTER:(.+)\]$/);
-        if (chapterMatch) {
-            currentChapter = chapterMatch[1];
-            currentSections = []; // Reset sections for new chapter
-            if (currentPage) {
-                currentPage.chapter = currentChapter;
-            }
-            continue;
-        }
-
-        // Check for section marker
-        const sectionMatch = trimmedLine.match(/^\[SECTION:(.+)\]$/);
-        if (sectionMatch) {
-            currentSections.push(sectionMatch[1]);
-            if (currentPage) {
-                currentPage.sections = [...currentSections];
-            }
-            continue;
-        }
-
-        // Regular content
-        if (currentPage && trimmedLine) {
-            if (currentPage.content) {
-                currentPage.content += '\n' + line;
-            } else {
-                currentPage.content = line;
-            }
-        }
+        
+        return pages.filter(p => p); // Remove empty pages
     }
-
-    // Add last page
-    if (currentPage) {
-        pages.push(currentPage);
-    }
-
-    return { pages, totalPages: pages.length };
+    
+    // Fallback to double line break separation
+    return text.split(/\n\s*\n/).filter(page => page.trim().length > 0);
 }
 
 /**
- * Read book content from file system with marker support
+ * Apply reading mode to content
  */
-async function readBookContent(
-    bookName: string,
-    pageNumber: number,
-    readingMode: string,
-    readingAmount: number
+function applyReadingMode(
+    content: string,
+    mode: string,
+    amount: number
+): string {
+    switch (mode) {
+        case "paragraphs":
+            const paragraphs = content.split('\n').filter(p => p.trim());
+            return paragraphs.slice(0, amount).join('\n\n');
+            
+        case "sentences":
+            const sentences = content.match(/[^.!?]+[.!?]+/g) || [];
+            return sentences.slice(0, amount).join(' ');
+            
+        case "fullpage":
+        default:
+            return content;
+    }
+}
+
+/**
+ * Search for books
+ */
+async function handleSearchMode(
+    supabase: SupabaseClient,
+    userId: string,
+    searchQuery?: string | null
 ): Promise<{ success: boolean; data?: any; message: string }> {
-    try {
-        // Try public library first, then private, then PDF processed output
-        const publicPath = `books/public/${bookName}.txt`;
-        const privatePath = `books/private/${bookName}.txt`;
-        const pdfPath = `books/pdf_processing/output/${bookName}.txt`;
+    
+    if (!searchQuery) {
+        return { 
+            success: false, 
+            message: "Please specify what you're looking for. Try 'Search for science fiction' or 'Search books by author name'." 
+        };
+    }
 
-        let content: string;
-        let hasMarkers = false;
+    const { data: books, error } = await supabase
+        .from('books')
+        .select('*')
+        .or(`book_name.ilike.%${searchQuery}%,author.ilike.%${searchQuery}%,description.ilike.%${searchQuery}%`)
+        .or(`is_public.eq.true,uploaded_by.eq.${userId}`);
 
-        try {
-            content = await Deno.readTextFile(pdfPath);
-            hasMarkers = true; // PDF processed files have markers
-        } catch {
-            try {
-                content = await Deno.readTextFile(publicPath);
-            } catch {
-                try {
-                    content = await Deno.readTextFile(privatePath);
-                } catch {
-                    return { success: false, message: `Book "${bookName}" not found in library.` };
-                }
-            }
-        }
+    if (error) {
+        return { success: false, message: `Search error: ${error.message}` };
+    }
 
-        let pages: Array<{ pageNum: number; content: string; chapter?: string; sections?: string[] }>;
-        let totalPages: number;
-
-        if (hasMarkers) {
-            // Parse content with markers
-            const parsed = parseBookWithMarkers(content);
-            pages = parsed.pages;
-            totalPages = parsed.totalPages;
-        } else {
-            // Legacy format - split by double line breaks
-            const legacyPages = content.split('\n\n').filter(page => page.trim().length > 0);
-            pages = legacyPages.map((pageContent, index) => ({
-                pageNum: index + 1,
-                content: pageContent
-            }));
-            totalPages = pages.length;
-        }
-
-        if (pageNumber > totalPages) {
-            return { success: false, message: `Page ${pageNumber} does not exist. Book has ${totalPages} pages.` };
-        }
-
-        const targetPage = pages.find(p => p.pageNum === pageNumber);
-        if (!targetPage) {
-            return { success: false, message: `Page ${pageNumber} not found.` };
-        }
-
-        let pageContent = targetPage.content;
-
-        // Apply reading mode
-        if (readingMode === "paragraphs") {
-            const paragraphs = pageContent.split('\n').filter(p => p.trim().length > 0);
-            pageContent = paragraphs.slice(0, readingAmount).join('\n');
-        } else if (readingMode === "sentences") {
-            const sentences = pageContent.split(/[.!?]+/).filter(s => s.trim().length > 0);
-            pageContent = sentences.slice(0, readingAmount).join('. ') + (sentences.length > readingAmount ? '.' : '');
-        }
-        // fullpage mode uses the entire page content
-
+    if (!books || books.length === 0) {
         return {
             success: true,
-            data: {
-                content: pageContent,
-                totalPages: totalPages,
-                chapter: targetPage.chapter,
-                sections: targetPage.sections,
-                hasMarkers: hasMarkers
-            },
-            message: "Content retrieved successfully"
+            data: { results: [] },
+            message: `No books found matching "${searchQuery}". Try different keywords or browse all books.`
         };
-
-    } catch (err) {
-        console.error(`Error reading book content:`, err);
-        return { success: false, message: `Error reading book file: ${err}` };
     }
-}
 
-/**
- * Update reading progress in database
- */
-async function updateReadingProgress(
-    supabase: SupabaseClient,
-    userId: string,
-    bookName: string,
-    currentPage: number,
-    totalPages: number
-): Promise<void> {
-    try {
-        const { error } = await supabase
-            .from('reading_history')
-            .upsert({
-                user_id: userId,
-                book_name: bookName,
-                current_page: currentPage,
-                total_pages: totalPages,
-                last_read_at: new Date().toISOString()
-            }, {
-                onConflict: 'user_id,book_name'
-            });
-
-        if (error) {
-            console.error(`Error updating reading progress:`, error);
+    let message = `🔍 **Search Results for "${searchQuery}":**\n\n`;
+    
+    books.forEach((book, idx) => {
+        message += `${idx + 1}. **"${book.book_name}"**`;
+        if (book.author) message += ` by ${book.author}`;
+        message += `\n`;
+        if (book.description) {
+            message += `   ${book.description.substring(0, 100)}${book.description.length > 100 ? '...' : ''}\n`;
         }
-    } catch (err) {
-        console.error(`Error in updateReadingProgress:`, err);
-    }
+        message += `   ${book.total_pages} pages${book.is_public ? '' : ' (Private)'}\n\n`;
+    });
+
+    message += "💡 Say 'Start reading [book name]' to begin any book!";
+
+    return {
+        success: true,
+        data: { results: books },
+        message
+    };
 }
 
 /**
- * Search for keywords in a book with marker support
+ * Navigate within a book
  */
-async function searchInBook(
+async function handleNavigateMode(
     supabase: SupabaseClient,
     userId: string,
-    bookName: string,
-    keyword: string
+    bookId?: string | null,
+    action?: string,
+    pageNumber?: number | null
 ): Promise<{ success: boolean; data?: any; message: string }> {
-    try {
-        // Try PDF processed output first, then public, then private
-        const pdfPath = `books/pdf_processing/output/${bookName}.txt`;
-        const publicPath = `books/public/${bookName}.txt`;
-        const privatePath = `books/private/${bookName}.txt`;
+    
+    if (!bookId) {
+        return { success: false, message: "Please specify which book to navigate." };
+    }
 
-        let content: string;
-        let hasMarkers = false;
+    // Get book and current reading position
+    const { data: book } = await supabase
+        .from('books')
+        .select('*')
+        .eq('book_id', bookId)
+        .single();
 
-        try {
-            content = await Deno.readTextFile(pdfPath);
-            hasMarkers = true;
-        } catch {
-            try {
-                content = await Deno.readTextFile(publicPath);
-            } catch {
-                try {
-                    content = await Deno.readTextFile(privatePath);
-                } catch {
-                    return { success: false, message: `Book "${bookName}" not found in library.` };
-                }
+    if (!book) {
+        return { success: false, message: "Book not found." };
+    }
+
+    const { data: history } = await supabase
+        .from('reading_history')
+        .select('current_page')
+        .eq('user_id', userId)
+        .eq('book_name', book.book_name)
+        .single();
+
+    let targetPage = history?.current_page || 1;
+
+    switch (action) {
+        case "next":
+            targetPage = Math.min(targetPage + 1, book.total_pages);
+            break;
+        case "previous":
+            targetPage = Math.max(targetPage - 1, 1);
+            break;
+        case "goto":
+            if (pageNumber && pageNumber >= 1 && pageNumber <= book.total_pages) {
+                targetPage = pageNumber;
+            } else {
+                return { 
+                    success: false, 
+                    message: `Invalid page number. Book has ${book.total_pages} pages.` 
+                };
             }
-        }
-
-        const results: Array<{ page: number; context: string; chapter?: string; sections?: string[] }> = [];
-
-        if (hasMarkers) {
-            // Parse content with markers for more accurate search
-            const parsed = parseBookWithMarkers(content);
-
-            parsed.pages.forEach((page) => {
-                if (page.content.toLowerCase().includes(keyword.toLowerCase())) {
-                    // Get context around the keyword
-                    const sentences = page.content.split(/[.!?]+/);
-                    const matchingSentences = sentences.filter(sentence =>
-                        sentence.toLowerCase().includes(keyword.toLowerCase())
-                    );
-
-                    results.push({
-                        page: page.pageNum,
-                        context: matchingSentences.join('. ').trim(),
-                        chapter: page.chapter,
-                        sections: page.sections
-                    });
-                }
-            });
-        } else {
-            // Legacy search for non-marked content
-            const pages = content.split('\n\n').filter(page => page.trim().length > 0);
-
-            pages.forEach((pageContent, index) => {
-                if (pageContent.toLowerCase().includes(keyword.toLowerCase())) {
-                    // Get context around the keyword
-                    const sentences = pageContent.split(/[.!?]+/);
-                    const matchingSentences = sentences.filter(sentence =>
-                        sentence.toLowerCase().includes(keyword.toLowerCase())
-                    );
-
-                    results.push({
-                        page: index + 1,
-                        context: matchingSentences.join('. ').trim()
-                    });
-                }
-            });
-        }
-
-        if (results.length === 0) {
+            break;
+        case "contents":
+            // Show table of contents or chapter list if available
             return {
                 success: true,
-                data: { results: [], count: 0, hasMarkers },
-                message: `Không tìm thấy từ khóa "${keyword}" trong "${bookName}".`
+                message: `📑 **"${book.book_name}" Contents:**\n\nTotal pages: ${book.total_pages}\nCurrent position: Page ${history?.current_page || 0}\n\n💡 Say 'Go to page [number]' to jump to any page.`
             };
-        }
-
-        return {
-            success: true,
-            data: { results: results, count: results.length, hasMarkers },
-            message: `Tìm thấy ${results.length} kết quả cho từ khóa "${keyword}" trong "${bookName}".`
-        };
-
-    } catch (err) {
-        console.error(`Error in searchInBook:`, err);
-        return { success: false, message: `Lỗi khi tìm kiếm trong sách: ${err}` };
     }
+
+    // Read the target page
+    const pageContent = await readPageFromStorage(supabase, book.file_path, targetPage);
+    
+    if (!pageContent.success) {
+        return pageContent;
+    }
+
+    // Update reading position
+    await supabase
+        .from('reading_history')
+        .upsert({
+            user_id: userId,
+            book_name: book.book_name,
+            current_page: targetPage,
+            total_pages: book.total_pages,
+            last_read_at: new Date().toISOString()
+        }, {
+            onConflict: 'user_id,book_name'
+        });
+
+    // Get reading settings and apply
+    const { data: settings } = await supabase
+        .from('reading_settings')
+        .select('*')
+        .eq('user_id', userId)
+        .single();
+
+    const processedContent = applyReadingMode(
+        pageContent.data.content,
+        settings?.reading_mode || 'fullpage',
+        settings?.reading_amount || 1
+    );
+
+    return {
+        success: true,
+        data: {
+            book,
+            currentPage: targetPage,
+            content: processedContent
+        },
+        message: `📖 **"${book.book_name}" - Page ${targetPage}/${book.total_pages}**\n\n${processedContent}\n\n💡 Say 'Next', 'Previous', or 'Go to page [number]' to navigate.`
+    };
 }
 
 /**
- * Get user's reading settings
+ * Handle reading settings
  */
-async function getReadingSettings(
+async function handleSettingsMode(
     supabase: SupabaseClient,
-    userId: string
+    userId: string,
+    action: string,
+    readingMode?: string | null,
+    readingAmount?: number | null
 ): Promise<{ success: boolean; data?: any; message: string }> {
-    try {
-        const { data, error } = await supabase
+    
+    if (action === "get") {
+        const { data: settings } = await supabase
             .from('reading_settings')
             .select('*')
             .eq('user_id', userId)
-            .maybeSingle();
+            .single();
 
-        if (error) {
-            console.error(`Error getting reading settings:`, error);
-            return { success: false, message: `Database error: ${error.message}` };
+        const currentMode = settings?.reading_mode || 'fullpage';
+        const currentAmount = settings?.reading_amount || 1;
+
+        let message = "⚙️ **Your Reading Settings:**\n\n";
+        message += `• Reading mode: **${currentMode}**\n`;
+        
+        if (currentMode !== 'fullpage') {
+            message += `• Amount per page: **${currentAmount} ${currentMode}**\n`;
         }
 
-        if (!data) {
-            // Return default settings
-            return {
-                success: true,
-                data: { readingMode: "fullpage", readingAmount: 1 },
-                message: "Using default reading settings: full page mode."
-            };
-        }
+        message += "\n💡 **Available options:**\n";
+        message += "• 'Set reading mode to fullpage' - Read entire pages\n";
+        message += "• 'Set reading mode to paragraphs' - Read by paragraphs\n";
+        message += "• 'Set reading mode to sentences' - Read by sentences\n";
+        message += "• 'Set amount to [number]' - Change how many paragraphs/sentences to read";
 
         return {
             success: true,
-            data: { readingMode: data.reading_mode, readingAmount: data.reading_amount },
-            message: `Current reading settings: ${data.reading_mode} mode${data.reading_mode !== 'fullpage' ? ` (${data.reading_amount})` : ''}.`
+            data: { settings },
+            message
         };
+    } else if (action === "set") {
+        if (!readingMode || !["fullpage", "paragraphs", "sentences"].includes(readingMode)) {
+            return { success: false, message: "Invalid reading mode. Choose: fullpage, paragraphs, or sentences." };
+        }
 
-    } catch (err) {
-        console.error(`Error in getReadingSettings:`, err);
-        return { success: false, message: `Error retrieving reading settings: ${err}` };
-    }
-}
+        const amount = readingMode === 'fullpage' ? 1 : (readingAmount || 1);
 
-/**
- * Set user's reading settings
- */
-async function setReadingSettings(
-    supabase: SupabaseClient,
-    userId: string,
-    readingMode: "paragraphs" | "sentences" | "fullpage",
-    readingAmount: number
-): Promise<{ success: boolean; data?: any; message: string }> {
-    try {
         const { error } = await supabase
             .from('reading_settings')
             .upsert({
                 user_id: userId,
                 reading_mode: readingMode,
-                reading_amount: readingAmount,
+                reading_amount: amount,
                 updated_at: new Date().toISOString()
             }, {
                 onConflict: 'user_id'
             });
 
         if (error) {
-            console.error(`Error setting reading settings:`, error);
-            return { success: false, message: `Database error: ${error.message}` };
+            return { success: false, message: `Error updating settings: ${error.message}` };
         }
+
+        let message = `✅ Reading settings updated!\n\n`;
+        message += `• Mode: ${readingMode}\n`;
+        if (readingMode !== 'fullpage') {
+            message += `• Amount: ${amount} ${readingMode} at a time\n`;
+        }
+        message += "\nThese settings will apply to your next reading session.";
 
         return {
             success: true,
-            message: `Reading settings updated: ${readingMode} mode${readingMode !== 'fullpage' ? ` (${readingAmount})` : ''}.`
+            message
         };
-
-    } catch (err) {
-        console.error(`Error in setReadingSettings:`, err);
-        return { success: false, message: `Error updating reading settings: ${err}` };
     }
+
+    return { success: false, message: "Invalid settings action." };
+}
+
+/**
+ * Handle bookmarks
+ */
+async function handleBookmarkMode(
+    supabase: SupabaseClient,
+    userId: string,
+    bookId?: string | null,
+    action?: string,
+    pageNumber?: number | null
+): Promise<{ success: boolean; data?: any; message: string }> {
+    
+    // For MVP, we'll use the reading_history table to track bookmarks
+    // In a full implementation, you'd want a separate bookmarks table
+    
+    if (action === "add") {
+        if (!bookId || !pageNumber) {
+            return { success: false, message: "Please specify which book and page to bookmark." };
+        }
+
+        // For now, we'll just update the current reading position
+        const { data: book } = await supabase
+            .from('books')
+            .select('book_name, total_pages')
+            .eq('book_id', bookId)
+            .single();
+
+        if (!book) {
+            return { success: false, message: "Book not found." };
+        }
+
+        await supabase
+            .from('reading_history')
+            .upsert({
+                user_id: userId,
+                book_name: book.book_name,
+                current_page: pageNumber,
+                total_pages: book.total_pages,
+                last_read_at: new Date().toISOString()
+            }, {
+                onConflict: 'user_id,book_name'
+            });
+
+        return {
+            success: true,
+            message: `✅ Bookmarked "${book.book_name}" at page ${pageNumber}. Say 'Continue reading' to return to this spot anytime!`
+        };
+    }
+
+    return { success: false, message: "Invalid bookmark action." };
 }

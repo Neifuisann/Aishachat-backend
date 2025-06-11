@@ -1,0 +1,20 @@
+My Private Book
+
+Chapter 1: Personal Thoughts
+
+This is a private book that only belongs to this specific user. It contains personal notes and thoughts that should not be accessible to other users.
+
+The book listing system should now show this book as a "private" source when listing books for user test-user-123.
+
+Chapter 2: Testing the System
+
+This chapter is here to test that the reading system can properly:
+1. List private books for specific users
+2. Read content from user-specific private books
+3. Search within user-specific private books
+
+The system should maintain proper isolation between different users' private books.
+
+Chapter 3: Conclusion
+
+This private book demonstrates the user-specific book management functionality in the reading system.

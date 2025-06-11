@@ -72,7 +72,7 @@ export async function AddNote(
             return { success: false, message: `Database error: ${error.message}` };
         }
 
-        const successMsg = `Successfully added note "${noteTitle}" for user ${userId}`;
+        const successMsg = `Successfully added note "${noteTitle}"`;
         console.log(successMsg);
         return { success: true, note: data as INote, message: successMsg };
 
@@ -256,6 +256,58 @@ export async function DeleteNote(
 
     } catch (err) {
         console.error(`Unexpected error in DeleteNote for user ${userId}:`, err);
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        return { success: false, message: `An unexpected error occurred: ${errorMessage}` };
+    }
+}
+
+/**
+ * Lists note titles for a user (lightweight overview)
+ * @param supabase - The Supabase client instance scoped to the user
+ * @param userId - The ID of the user
+ * @param limit - Optional limit for number of notes to return
+ * @returns An object containing success status and detailed message with note titles
+ */
+export async function ListNoteTitles(
+    supabase: SupabaseClient,
+    userId: string,
+    limit: number = 50
+): Promise<{ success: boolean; data?: { note_id: string; title: string; created_at: string }[]; message: string }> {
+    console.log(`Attempting to list note titles for user ${userId}`);
+
+    try {
+        const { data, error } = await supabase
+            .from('notes')
+            .select('note_id, title, created_at')
+            .eq('user_id', userId)
+            .order('created_at', { ascending: false })
+            .limit(limit);
+
+        if (error) {
+            console.error(`Supabase error listing note titles for user ${userId}:`, error);
+            return { success: false, message: `Database error: ${error.message}` };
+        }
+
+        const noteTitles = data as { note_id: string; title: string; created_at: string }[];
+
+        // Create detailed message with all note titles
+        let successMsg = `Found ${noteTitles.length} note(s) for user ${userId}`;
+
+        if (noteTitles.length > 0) {
+            successMsg += "\n\nYour Notes:";
+            noteTitles.forEach((note, index) => {
+                const createdDate = new Date(note.created_at).toLocaleDateString();
+                successMsg += `\n${index + 1}. "${note.title}"`;
+            });
+        } else {
+            successMsg += "\n\nNo notes found. You can create your first note by saying something like 'Take note that...'";
+        }
+
+        console.log(successMsg);
+        return { success: true, data: noteTitles, message: successMsg };
+
+    } catch (err) {
+        console.error(`Unexpected error in ListNoteTitles for user ${userId}:`, err);
         const errorMessage = err instanceof Error ? err.message : String(err);
         return { success: false, message: `An unexpected error occurred: ${errorMessage}` };
     }

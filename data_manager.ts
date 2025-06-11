@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { GetMemory, UpdateMemory } from "./memory_handler.ts";
-import { AddNote, SearchNotes, UpdateNote, DeleteNote } from "./note_handler.ts";
+import { AddNote, SearchNotes, UpdateNote, DeleteNote, ListNoteTitles } from "./note_handler.ts";
 import "./types.d.ts";
 
 /**
@@ -10,7 +10,7 @@ import "./types.d.ts";
  * @param supabase - The Supabase client instance scoped to the user
  * @param userId - The ID of the user
  * @param mode - The data type to manage: "Persona" or "Notes"
- * @param action - The action to perform: "Search", "Edit", or "Delete"
+ * @param action - The action to perform: "List", "Search", "Edit", or "Delete"
  * @param query - Search query (required for Notes Search)
  * @param noteId - Note ID (required for Notes Edit/Delete of existing notes)
  * @param title - Note title (optional for Notes Edit)
@@ -25,7 +25,7 @@ export async function ManageData(
     supabase: SupabaseClient,
     userId: string,
     mode: "Persona" | "Notes",
-    action: "Search" | "Edit" | "Delete",
+    action: "List" | "Search" | "Edit" | "Delete",
     query?: string | null,
     noteId?: string | null,
     title?: string | null,
@@ -41,8 +41,8 @@ export async function ManageData(
     if (!["Persona", "Notes"].includes(mode)) {
         return { success: false, message: "Invalid mode. Must be 'Persona' or 'Notes'." };
     }
-    if (!["Search", "Edit", "Delete"].includes(action)) {
-        return { success: false, message: "Invalid action. Must be 'Search', 'Edit', or 'Delete'." };
+    if (!["List", "Search", "Edit", "Delete"].includes(action)) {
+        return { success: false, message: "Invalid action. Must be 'List', 'Search', 'Edit', or 'Delete'." };
     }
 
     try {
@@ -80,7 +80,15 @@ export async function ManageData(
 
         // Handle Notes mode
         else if (mode === "Notes") {
-            if (action === "Search") {
+            if (action === "List") {
+                // List note titles (like ListNoteTitles)
+                const result = await ListNoteTitles(supabase, userId);
+                return {
+                    success: result.success,
+                    data: result.data,
+                    message: result.message
+                };
+            } else if (action === "Search") {
                 // Search notes (like SearchNotes)
                 if (!query || typeof query !== 'string' || !query.trim()) {
                     return { success: false, message: "query is required for Notes Search." };

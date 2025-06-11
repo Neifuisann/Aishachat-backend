@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
-import { ListSchedules, AddSchedule, UpdateSchedule, DeleteSchedule, SearchSchedules, FindScheduleConflicts } from "./schedule_handler.ts";
+import { ListSchedules, AddSchedule, UpdateSchedule, DeleteSchedule, SearchSchedules, FindScheduleConflicts, CompleteSchedule } from "./schedule_handler.ts";
 import "./types.d.ts";
 
 /**
@@ -8,7 +8,7 @@ import "./types.d.ts";
  *
  * @param supabase - The Supabase client instance scoped to the user
  * @param userId - The ID of the user
- * @param mode - The schedule operation mode: "List", "Add", "Update", "Delete", "Search", or "CheckConflict"
+ * @param mode - The schedule operation mode: "List", "Add", "Update", "Delete", "Search", "CheckConflict", or "Complete"
  * @param scheduleId - Schedule ID (required for Update/Delete operations)
  * @param title - Schedule title (required for Add, optional for Update)
  * @param scheduledTime - Time for schedule in natural language or HH:MM format (required for Add, optional for Update)
@@ -22,7 +22,7 @@ import "./types.d.ts";
 export async function ScheduleManager(
     supabase: SupabaseClient,
     userId: string,
-    mode: "List" | "Add" | "Update" | "Delete" | "Search" | "CheckConflict",
+    mode: "List" | "Add" | "Update" | "Delete" | "Search" | "CheckConflict" | "Complete",
     scheduleId?: string | null,
     title?: string | null,
     scheduledTime?: string | null,
@@ -35,8 +35,8 @@ export async function ScheduleManager(
     console.log(`ScheduleManager called: mode=${mode}, userId=${userId}`);
 
     // Validate mode
-    if (!["List", "Add", "Update", "Delete", "Search", "CheckConflict"].includes(mode)) {
-        return { success: false, message: "Invalid mode. Must be 'List', 'Add', 'Update', 'Delete', 'Search', or 'CheckConflict'." };
+    if (!["List", "Add", "Update", "Delete", "Search", "CheckConflict", "Complete"].includes(mode)) {
+        return { success: false, message: "Invalid mode. Must be 'List', 'Add', 'Update', 'Delete', 'Search', 'CheckConflict', or 'Complete'." };
     }
 
     try {
@@ -129,7 +129,7 @@ export async function ScheduleManager(
                 if (!scheduledTime || typeof scheduledTime !== 'string' || !scheduledTime.trim()) {
                     return { success: false, message: "scheduledTime is required for checking conflicts." };
                 }
-                
+
                 const checkResult = await FindScheduleConflicts(
                     supabase, userId, scheduledTime, targetDate, scheduleId
                 );
@@ -137,6 +137,19 @@ export async function ScheduleManager(
                     success: checkResult.success,
                     data: checkResult.conflicts,
                     message: checkResult.message
+                };
+
+            case "Complete":
+                // Complete and archive schedule
+                if (!scheduleId || typeof scheduleId !== 'string' || !scheduleId.trim()) {
+                    return { success: false, message: "scheduleId is required for completing a schedule." };
+                }
+
+                const completeResult = await CompleteSchedule(supabase, userId, scheduleId);
+                return {
+                    success: completeResult.success,
+                    data: completeResult.schedule,
+                    message: completeResult.message
                 };
 
             default:

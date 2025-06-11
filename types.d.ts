@@ -144,6 +144,7 @@ declare global {
         schedule_pattern?: ISchedulePattern | null;
         target_date?: string | null; // YYYY-MM-DD format for one-time schedules
         is_active: boolean;
+        archive: boolean; // true when schedule is completed and archived
         created_at: string;
         updated_at: string;
     }

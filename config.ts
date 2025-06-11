@@ -130,12 +130,12 @@ export const AUDIO_DEBUG_DIR = Deno.env.get("AUDIO_DEBUG_DIR") || "./debug_audio
 export const AUDIO_DEBUG_MAX_FILES = Number(Deno.env.get("AUDIO_DEBUG_MAX_FILES") || "50");
 
 // TTS Provider Configuration
-export type TTSProvider = "GEMINI" | "ELEVEN_LABS" | "OPENAI";
+export type TTSProvider = "GEMINI" | "ELEVEN_LABS" | "OPENAI" | "EDGE_TTS";
 
 export const TTS_PROVIDER = (Deno.env.get("TTS_PROVIDER") || "GEMINI").toUpperCase() as TTSProvider;
 
 // Validate TTS provider
-const validProviders: TTSProvider[] = ["GEMINI", "ELEVEN_LABS", "OPENAI"];
+const validProviders: TTSProvider[] = ["GEMINI", "ELEVEN_LABS", "OPENAI", "EDGE_TTS"];
 if (!validProviders.includes(TTS_PROVIDER)) {
   console.warn(`Invalid TTS_PROVIDER: ${TTS_PROVIDER}. Falling back to GEMINI.`);
   // We can't reassign the const, but we'll handle this in the validation function
@@ -147,8 +147,16 @@ export const ELEVENLABS_API_KEY = Deno.env.get("ELEVENLABS_API_KEY") || "";
 // OpenAI TTS Configuration
 export const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY") || "";
 
+// Edge TTS Configuration (no API key required)
+export const EDGE_TTS_DEFAULT_VOICE = Deno.env.get("EDGE_TTS_DEFAULT_VOICE") || "vi-VN-HoaiMyNeural";
+export const EDGE_TTS_DEFAULT_FORMAT = Deno.env.get("EDGE_TTS_DEFAULT_FORMAT") || "AUDIO_24KHZ_96KBITRATE_MONO_MP3";
+export const EDGE_TTS_DEFAULT_SPEED = parseFloat(Deno.env.get("EDGE_TTS_DEFAULT_SPEED") || "1.1");
+
 // Backward compatibility
 export const USE_ELEVENLABS_TTS = TTS_PROVIDER === "ELEVEN_LABS";
+
+// Flash Live Mode Configuration
+export const USE_FLASH_LIVE_AS_BASE = Deno.env.get("USE_FLASH_LIVE_AS_BASE") !== "false";
 
 /**
  * Get the effective TTS provider (with fallback logic)
@@ -173,6 +181,8 @@ export function validateTTSProvider(provider: TTSProvider): boolean {
       return ELEVENLABS_API_KEY !== "" && ELEVENLABS_API_KEY !== "your_elevenlabs_api_key_here";
     case "OPENAI":
       return OPENAI_API_KEY !== "" && OPENAI_API_KEY !== "your_openai_api_key_here";
+    case "EDGE_TTS":
+      return true; // Edge TTS doesn't require an API key
     case "GEMINI":
       return true; // Gemini TTS is always available if Gemini API is configured
     default:
