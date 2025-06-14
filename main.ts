@@ -1,19 +1,19 @@
-import './config.ts';
+import './src/config/config.ts';
 
 import { createServer } from 'node:http';
 import { WebSocketServer } from 'npm:ws';
 import type { WebSocketServer as _WSS } from 'npm:ws'; // Use _WSS alias
 
-import { Logger } from './logger.ts';
+import { Logger } from './src/utils/logger.ts';
 
 const logger = new Logger('[Main]');
 
-import { authenticateUser } from './utils.ts';
-import { getSupabaseClient } from './supabase.ts';
-import { setupWebSocketConnectionHandler } from './websocket_handler.ts';
-import { audioDebugManager } from './audio_debug.ts';
+import { authenticateUser } from './src/utils/utils.ts';
+import { getSupabaseClient } from './src/services/supabase.ts';
+import { setupWebSocketConnectionHandler } from './src/handlers/websocket_handler.ts';
+import { audioDebugManager } from './src/audio/audio_debug.ts';
 
-import { HOST, isDev, PORT } from './config.ts';
+import { HOST, isDev, PORT } from './src/config/config.ts';
 
 logger.info('Initializing server...');
 

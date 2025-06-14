@@ -7,8 +7,8 @@ import {
     MIC_CHANNELS,
     MIC_SAMPLE_BITS,
     MIC_SAMPLE_RATE,
-} from './config.ts';
-import { Logger } from './logger.ts';
+} from '../config/config.ts';
+import { Logger } from '../utils/logger.ts';
 
 const logger = new Logger('[AudioDebug]');
 

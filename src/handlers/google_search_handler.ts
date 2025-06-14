@@ -1,6 +1,6 @@
 import { GoogleGenAI, HarmBlockThreshold, HarmCategory } from 'npm:@google/genai';
-import { apiKeyManager } from './config.ts';
-import { Logger } from './logger.ts';
+import { apiKeyManager } from '../config/config.ts';
+import { Logger } from '../utils/logger.ts';
 
 const logger = new Logger('[GoogleSearch]');
 

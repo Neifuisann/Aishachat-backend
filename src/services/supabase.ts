@@ -1,5 +1,5 @@
 import { createClient, SupabaseClient } from 'jsr:@supabase/supabase-js@2';
-import { Logger } from './logger.ts';
+import { Logger } from '../utils/logger.ts';
 
 const logger = new Logger('[Supabase]');
 

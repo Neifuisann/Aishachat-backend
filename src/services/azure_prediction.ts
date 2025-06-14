@@ -1,9 +1,9 @@
-import { Logger } from './logger.ts';
+import { Logger } from '../utils/logger.ts';
 
 const logger = new Logger('[AzurePrediction]');
 
 const ENDPOINT =
-    'https://neimon-prediction.cognitiveservices.azure.com/customvision/v3.0/Prediction/5a4fa886-b85c-448d-9195-a42e4e332504/classify/iterations/Iteration1/image';
+    'https://neimon-prediction.cognitiveservices.azure.com/customvision/v3.0/Prediction/5a4fa886-b85c-448d-9195-a42e4e332504/classify/iterations/Iteration2/image';
 
 const KEY =
     '3O2Mek7lJbexaAwJ3oy4BwtrwSM8Z2fNmEJ7YPh9YYpgCBahr617JQQJ99BFACqBBLyXJ3w3AAAIACOGJ5Vd';

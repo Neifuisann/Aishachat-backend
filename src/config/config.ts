@@ -1,5 +1,5 @@
 import { load } from 'https://deno.land/std@0.224.0/dotenv/mod.ts';
-import { Logger } from './logger.ts';
+import { Logger } from '../utils/logger.ts';
 
 const logger = new Logger('[Config]');
 

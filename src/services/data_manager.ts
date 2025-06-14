@@ -1,8 +1,8 @@
 import type { SupabaseClient } from 'jsr:@supabase/supabase-js@2';
-import { GetMemory, UpdateMemory } from './memory_handler.ts';
-import { AddNote, DeleteNote, ListNoteTitles, SearchNotes, UpdateNote } from './note_handler.ts';
-import './types.d.ts';
-import { Logger } from './logger.ts';
+import { GetMemory, UpdateMemory } from '../handlers/memory_handler.ts';
+import { AddNote, DeleteNote, ListNoteTitles, SearchNotes, UpdateNote } from '../handlers/note_handler.ts';
+import '../config/types.d.ts';
+import { Logger } from '../utils/logger.ts';
 
 const logger = new Logger('[DataMgr]');
 

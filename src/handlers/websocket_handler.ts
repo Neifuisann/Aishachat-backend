@@ -16,15 +16,15 @@ import {
     SESSION_RESUMPTION_CONFIG,
     TTS_PROVIDER,
     TTS_SAMPLE_RATE,
-} from './config.ts';
+} from '../config/config.ts';
 
-import { AudioFilter, boostTtsVolumeInPlace, ttsState } from './audio.ts';
+import { AudioFilter, boostTtsVolumeInPlace, ttsState } from '../audio/audio.ts';
 
-import { ADPCMStreamProcessor } from './adpcm.ts';
-import { audioDebugManager } from './audio_debug.ts';
-import { SetVolume } from './volume_handler.ts';
-import { isValidJpegBase64 } from './image_utils.ts';
-import { Logger } from './logger.ts';
+import { ADPCMStreamProcessor } from '../audio/adpcm.ts';
+import { audioDebugManager } from '../audio/audio_debug.ts';
+import { SetVolume } from '../audio/volume_handler.ts';
+import { isValidJpegBase64 } from '../utils/image_utils.ts';
+import { Logger } from '../utils/logger.ts';
 
 // TTS imports
 import {
@@ -32,7 +32,7 @@ import {
     validateAzureTTSConfig,
     DEFAULT_VOICE,
     type AzureTTSRequest,
-} from './azure_tts.ts';
+} from '../audio/azure_tts.ts';
 
 // Flash handler imports
 import {
@@ -50,7 +50,7 @@ import {
     getChatHistory,
     getDeviceInfo,
     updateUserSessionTime,
-} from './supabase.ts';
+} from '../services/supabase.ts';
 
 // ===== Type Definitions =====
 

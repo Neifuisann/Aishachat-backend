@@ -7,8 +7,8 @@
  * - Connection state management
  */
 
-import { Logger } from './logger.ts';
-import { CONNECTION_RETRY_CONFIG, CIRCUIT_BREAKER_CONFIG, KEEP_ALIVE_CONFIG } from './config.ts';
+import { Logger } from '../utils/logger.ts';
+import { CONNECTION_RETRY_CONFIG, CIRCUIT_BREAKER_CONFIG, KEEP_ALIVE_CONFIG } from '../config/config.ts';
 
 const logger = new Logger('[ConnectionManager]');
 

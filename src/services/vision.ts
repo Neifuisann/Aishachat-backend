@@ -1,5 +1,5 @@
-import { apiKeyManager, getGeminiVisionUrl } from './config.ts';
-import { Logger } from './logger.ts';
+import { apiKeyManager, getGeminiVisionUrl } from '../config/config.ts';
+import { Logger } from '../utils/logger.ts';
 
 const logger = new Logger('[Vision]');
 

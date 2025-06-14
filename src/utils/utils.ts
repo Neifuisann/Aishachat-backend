@@ -1,9 +1,9 @@
 import * as jose from 'https://deno.land/x/jose@v5.9.6/index.ts';
-import { getUserByEmail } from './supabase.ts';
+import { getUserByEmail } from '../services/supabase.ts';
 import type { SupabaseClient } from 'jsr:@supabase/supabase-js@2';
 import crypto from 'node:crypto';
 import { Buffer } from 'node:buffer';
-import { Logger } from './logger.ts';
+import { Logger } from '../utils/logger.ts';
 
 const logger = new Logger('[Utils]');
 

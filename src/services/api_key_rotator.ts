@@ -7,7 +7,7 @@
  * - Automatic key validation and testing
  */
 
-import { Logger } from './logger.ts';
+import { Logger } from '../utils/logger.ts';
 
 const logger = new Logger('[APIKeyRotator]');
 

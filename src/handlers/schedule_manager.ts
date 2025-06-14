@@ -8,8 +8,8 @@ import {
     SearchSchedules,
     UpdateSchedule,
 } from './schedule_handler.ts';
-import './types.d.ts';
-import { Logger } from './logger.ts';
+import '../config/types.d.ts';
+import { Logger } from '../utils/logger.ts';
 
 const logger = new Logger('[ScheduleMgr]');
 

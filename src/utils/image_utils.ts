@@ -5,7 +5,7 @@
 
 import Jimp from 'jimp';
 import { Buffer } from 'node:buffer';
-import { Logger } from './logger.ts';
+import { Logger } from '../utils/logger.ts';
 
 const logger = new Logger('[ImageUtils]');
 

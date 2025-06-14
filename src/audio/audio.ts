@@ -3,9 +3,9 @@ import {
     MIC_INPUT_GAIN,
     TTS_FRAME_SIZE_BYTES,
     TTS_SAMPLE_RATE,
-} from './config.ts';
+} from '../config/config.ts';
 import { ADPCM, ADPCMEncoder } from './adpcm.ts';
-import { Logger } from './logger.ts';
+import { Logger } from '../utils/logger.ts';
 
 const logger = new Logger('[Audio]');
 

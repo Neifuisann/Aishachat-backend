@@ -11,8 +11,8 @@
 //
 // ---------------------------------------------------------------------------
 
-import { Logger } from './logger.ts';
-import { TTS_FRAME_SIZE_BYTES } from './config.ts';
+import { Logger } from '../utils/logger.ts';
+import { TTS_FRAME_SIZE_BYTES } from '../config/config.ts';
 
 const log = new Logger('[AzureTTS]');
 

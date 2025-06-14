@@ -1,14 +1,14 @@
 import { GoogleGenAI, HarmBlockThreshold, HarmCategory, Type } from 'npm:@google/genai';
 import type { SupabaseClient } from 'jsr:@supabase/supabase-js@2';
-import { apiKeyManager } from './config.ts';
-import { getAzureMoneyClassification } from './azure_prediction.ts';
-import { ManageData } from './data_manager.ts';
+import { apiKeyManager } from '../config/config.ts';
+import { getAzureMoneyClassification } from '../services/azure_prediction.ts';
+import { ManageData } from '../services/data_manager.ts';
 import { ScheduleManager } from './schedule_manager.ts';
-import { Logger } from './logger.ts';
+import { Logger } from '../utils/logger.ts';
 
 const logger = new Logger('[Flash]');
 import { ReadingManager } from './reading_handler.ts';
-import { createSystemPrompt, getChatHistory } from './supabase.ts';
+import { createSystemPrompt, getChatHistory } from '../services/supabase.ts';
 import { performGoogleSearch } from './google_search_handler.ts';
 
 // ===========================
@@ -46,6 +46,7 @@ interface SessionData {
     lastUsed: Date;
     deviceCallbacks?: DeviceOperationCallbacks;
     scheduleContext?: ScheduleContext;
+    lastImage?: string; // Store the most recent captured image for follow-up questions
 }
 
 interface ScheduleContext {
@@ -71,10 +72,16 @@ class ScheduleConversationHelper {
     static parseNaturalTime(input: string, currentTime: Date = new Date()): string | null {
         const normalized = input.toLowerCase().trim();
 
-        // Time-based patterns
+        // Time-based patterns (English and Vietnamese)
         const timePatterns = [
             { pattern: /(\d{1,2}):(\d{2})\s*(am|pm)?/i, handler: this.parseExactTime },
             { pattern: /(\d{1,2})\s*(am|pm)/i, handler: this.parseHourTime },
+            // Vietnamese time patterns
+            { pattern: /(\d{1,2})\s*giờ\s*sáng/i, handler: (m: RegExpMatchArray) => this.parseVietnameseTime(m, 'am') },
+            { pattern: /(\d{1,2})\s*giờ\s*chiều/i, handler: (m: RegExpMatchArray) => this.parseVietnameseTime(m, 'pm') },
+            { pattern: /(\d{1,2})\s*giờ\s*tối/i, handler: (m: RegExpMatchArray) => this.parseVietnameseTime(m, 'pm') },
+            { pattern: /(\d{1,2})\s*giờ\s*trưa/i, handler: () => '12:00' }, // noon
+            { pattern: /(\d{1,2})\s*giờ/i, handler: (m: RegExpMatchArray) => this.parseVietnameseHour(m) },
             {
                 pattern: /in\s+(\d+)\s+hour/i,
                 handler: (m: RegExpMatchArray) => this.addHours(currentTime, parseInt(m[1])),
@@ -83,11 +90,11 @@ class ScheduleConversationHelper {
                 pattern: /in\s+(\d+)\s+minute/i,
                 handler: (m: RegExpMatchArray) => this.addMinutes(currentTime, parseInt(m[1])),
             },
-            { pattern: /morning/i, handler: () => '09:00' },
-            { pattern: /noon|lunch/i, handler: () => '12:00' },
-            { pattern: /afternoon/i, handler: () => '15:00' },
-            { pattern: /evening/i, handler: () => '18:00' },
-            { pattern: /night/i, handler: () => '20:00' },
+            { pattern: /morning|sáng/i, handler: () => '09:00' },
+            { pattern: /noon|lunch|trưa/i, handler: () => '12:00' },
+            { pattern: /afternoon|chiều/i, handler: () => '15:00' },
+            { pattern: /evening|tối/i, handler: () => '18:00' },
+            { pattern: /night|đêm/i, handler: () => '20:00' },
         ];
 
         for (const { pattern, handler } of timePatterns) {
@@ -119,6 +126,24 @@ class ScheduleConversationHelper {
 
         if (ampm.toLowerCase() === 'pm' && hour !== 12) hour += 12;
         if (ampm.toLowerCase() === 'am' && hour === 12) hour = 0;
+
+        return `${hour.toString().padStart(2, '0')}:00`;
+    }
+
+    private static parseVietnameseTime(match: RegExpMatchArray, period: 'am' | 'pm'): string {
+        let hour = parseInt(match[1]);
+
+        if (period === 'pm' && hour !== 12) hour += 12;
+        if (period === 'am' && hour === 12) hour = 0;
+
+        return `${hour.toString().padStart(2, '0')}:00`;
+    }
+
+    private static parseVietnameseHour(match: RegExpMatchArray): string {
+        const hour = parseInt(match[1]);
+
+        // For Vietnamese, assume 24-hour format if no period specified
+        if (hour < 0 || hour > 23) return '12:00'; // fallback
 
         return `${hour.toString().padStart(2, '0')}:00`;
     }
@@ -248,13 +273,14 @@ const RETRYABLE_ERROR_MESSAGES = [
 
 const MODEL_CONFIG = {
     model: 'gemini-2.5-flash-preview-05-20',
-    temperature: 1,
-    thinkingBudget: 0,
+    temperature: 0.7,
+    thinkingBudget: 250,
     responseMimeType: 'text/plain',
 };
 
 const VISION_CONFIG = {
     temperature: 0.3,
+    thinkingBudget: 3000,
 };
 
 // ===========================
@@ -581,22 +607,27 @@ class ToolDefinitions {
         return {
             name: 'GetVision',
             description:
-                "Captures an image using the device's camera. Use when user asks about visual content and enviroment awareness. Dont need comfirmation from user to take picture.",
+                "Captures an image using the device's camera OR uses the last captured image for follow-up questions. Use when user asks about any visual, environment related questions, or money classification. Don't need confirmation from user to take picture.",
             parameters: {
                 type: 'OBJECT',
                 properties: {
                     prompt: {
                         type: 'STRING',
                         description:
-                            "The user's exact command in reported speech with no changes. Pass exactly what the user said.",
+                            "What to analyze in the image? (e.g., 'Describe the environment in this image', 'What is the person doing in this photo?').",
                     },
                     money_classification: {
                         type: 'BOOLEAN',
                         description:
                             'Optional flag. When true the system performs a two‑step Vietnamese bank‑note classification.',
                     },
+                    use_last_image: {
+                        type: 'BOOLEAN',
+                        description:
+                            'When true, uses the last captured image instead of taking a new photo. Use this for follow-up questions about the same image.',
+                    },
                 },
-                required: ['prompt', 'money_classification'],
+                required: ['prompt', 'money_classification', 'use_last_image'],
             },
         };
     }
@@ -627,22 +658,18 @@ class ToolDefinitions {
 class SystemInstructionBuilder {
     private static readonly BASE_INSTRUCTION = `
 <CORE PRINCIPLE>
--YOU ARE AN ASSISTANT FOR BLIND VIETNAMESE USERS, CAPABLE OF ANWSERING VARIOUS QUESTIONS AND USING TOOLS.
--RESPOND LIKE A REAL HUMAN, YOU WILL WIN 1000 DOLLARS FROM GOOGLE IF THE USER DON'T REALIZE YOU ARE A.I.
--BE PROACTIVE, THE USER HAS ALWAYS CONFIRMED THEIR COMMAND. 
+-YOU ARE AN ASSISTANT FOR VIETNAMESE USERS, CAPABLE OF ANWSERING VARIOUS QUESTIONS AND USING TOOLS.
 -USE AFFIRMATIVE SENTENCES TO SPEAK TO THE USER.
 -EACH OF YOUR RESPONSE SHOULD MUST LESS THAN 6 sentences. 
--ASK THE USER IF THEY WANT TO CONTINUE IF YOU FELL YOUR PREVIOUS RESPONSE IS NOT ENOUGH.
 -Always refine the raw function output you got for more natural and avoid too lenghty response.
-EXAMPLE TO AVOID:
-User: "What am I holding?".
-You: "To know what you are holding, I need to see a picture, can you show me a picture?".
-User: "Tell me about the history of Earth during the Cretaceous period?".
-You: "Do you want me to tell you about the history of Earth during the Cretaceous period?".
+-You got user permission to use their camera, no need to confirm or ask for permission again.
+-If you not exectly sure what the user want but their command is clear enough, then respond in the most relevant way you can.
+-User want every turn they communicate with you is have useful information, avoid hesitating.
+-User can only interact with you through voice, so never asking them to do anything outside of voice.
 </CORE PRINCIPLE>
 
 <schedule_conversation_guidelines>
-SCHEDULING PRINCIPLES FOR BLIND USERS:
+SCHEDULING PRINCIPLES USERS:
 1. TIME AWARENESS: Always announce times in 12-hour format with AM/PM
 2. PROGRESSIVE DISCLOSURE: Ask for information step by step, not all at once
 3. NATURAL CONFIRMATION: Repeat back what you understood in natural language
@@ -687,9 +714,10 @@ AVAILABLE FUNCTIONS:
    - Convert relative dates: "tomorrow" → actual YYYY-MM-DD format
 3. ReadingManager - For book reading system including listing available books.
 4. SetVolume - For adjusting device volume level.
-5. GetVision - For capturing and analyzing images from the device camera.
-*Use GetVision for ANY visual or enviroment awareness request: "bạn đang nhìn thấy gì", "tôi đang cầm gì", "mệnh giá tờ tiền tôi đang cầm", "tôi đang ở đâu", "Có ai xung quanh không?". Và nhiều tình huống hơn.
-*Never mention about the quality of the image, accept what you have!
+5. GetVision - For capturing and analyzing images from the device camera OR using the last captured image for follow-up questions.
+*Use GetVision for ANY visual or environment awareness request: "bạn đang nhìn thấy gì", "tôi đang cầm gì", "mệnh giá tờ tiền tôi đang cầm", "tôi đang ở đâu", "Có ai xung quanh không?". Và nhiều tình huống hơn.
+*For follow-up questions about the same image (like "tell me more about the colors", "what else do you see", "describe it in more detail"), set use_last_image=true to avoid taking a new photo.
+*Permission to use camera is already granted, automatically calling when necessary.
 6. Websearch - For real-time information like weather and news or so much more.
 *Dont use Websearch for things that you already absolutely sure or common knowlazure.
 *When you receive search results, analyze and synthesize them into a natural, conversational response.
@@ -698,7 +726,7 @@ AVAILABLE FUNCTIONS:
 INSTRUCTIONS:
 - Choose the appropriate function(s) to execute.
 - Provide a helpful response based on the function results.
-- Use GetVision only when user explicitly asks about visual content.
+- Use GetVision when user asks about visual content. For follow-up questions about the same image, use use_last_image=true.
 <tool_calling_instructions>
 
 <text_to_speech_formatting>
@@ -729,6 +757,7 @@ You are now connected to a Vietnamese speaker. Remember to desguise as a real hu
 -YOU ARE IN A REAL-LIFE SITUATION WHERE THE USER NEEDS YOU TO BE QUICK.
 -ALWAYS BE PROACTIVE, THE USER HAS ALWAYS CONFIRMED THEIR COMMAND.
 -ALWAYS USE AFFIRMATIVE SENTENCES TO SPEAK TO THE USER.
+-Never mention about the quality of the image, accept what you have!
 <CORE PRINCIPLE>
 
 <Money_regcognition_cheatsheet>
@@ -1037,8 +1066,27 @@ class FunctionCallHandler {
     }
 
     private async handleVisionCall(args: any): Promise<any> {
-        logger.info(`*GetVision called with prompt: "${args.prompt}"`);
+        logger.info(`*GetVision called with prompt: "${args.prompt}", use_last_image: ${args.use_last_image}`);
 
+        // Check if user wants to use the last captured image
+        if (args.use_last_image) {
+            if (this.sessionData.lastImage) {
+                logger.info('Using last captured image for follow-up question');
+                return {
+                    success: true,
+                    imageData: this.sessionData.lastImage,
+                    prompt: args.prompt || 'Describe what you see',
+                    money_classification: Boolean(args.money_classification),
+                };
+            } else {
+                return {
+                    success: false,
+                    message: 'No previous image available. Please take a new photo first.',
+                };
+            }
+        }
+
+        // Capture new image
         if (!this.sessionData.deviceCallbacks?.requestPhoto) {
             return {
                 success: false,
@@ -1395,6 +1443,7 @@ class Flash25SessionManager {
                 createdAt: new Date(),
                 lastUsed: new Date(),
                 scheduleContext: {},
+                lastImage: undefined,
             };
 
             this.activeSessions.set(newSessionId, newSession);
@@ -1465,6 +1514,7 @@ class Flash25SessionManager {
             lastUsed: new Date(),
             deviceCallbacks,
             scheduleContext: {},
+            lastImage: undefined,
         };
 
         // Update session data for the specific session
@@ -1513,6 +1563,7 @@ class Flash25SessionManager {
                     createdAt: new Date(),
                     lastUsed: new Date(),
                     scheduleContext: {},
+                    lastImage: undefined,
                 };
 
                 this.warmSessions.set(warmSessionId, warmSession);
@@ -1539,6 +1590,13 @@ class Flash25SessionManager {
 
         try {
             session.lastUsed = new Date();
+
+            // Store the image as the last captured image for follow-up questions
+            // Only store base64 images, not URIs
+            if (!imageDataOrUri.startsWith('https://')) {
+                session.lastImage = imageDataOrUri;
+                logger.info(`Stored image in session for follow-up questions (${Math.round(imageDataOrUri.length * 3 / 4 / 1024)} KB)`);
+            }
 
             const imagePart = this.createImagePart(imageDataOrUri);
 
@@ -1579,6 +1637,9 @@ class Flash25SessionManager {
                         model: MODEL_CONFIG.model,
                         config: {
                             temperature: VISION_CONFIG.temperature,
+                            thinkingConfig: {
+                                thinkingBudget: VISION_CONFIG.thinkingBudget,
+                            },
                             safetySettings: ConfigurationFactory.getSafetySettings(),
                             responseMimeType: MODEL_CONFIG.responseMimeType,
                             systemInstruction: SystemInstructionBuilder.buildVisionInstruction(),
