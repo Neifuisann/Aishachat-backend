@@ -179,14 +179,14 @@ export class APIKeyManager {
     /**
      * Retry key rotation with exponential backoff
      */
-    private async retryRotation(service: string, attempt: number): Promise<void> {
+    private retryRotation(service: string, attempt: number): void {
         if (attempt > this.config.maxRetries) {
             logger.error(`Max rotation retries exceeded for service: ${service}`);
             return;
         }
 
         const delay = Math.min(1000 * Math.pow(2, attempt - 1), 60000); // Max 1 minute
-        
+
         logger.info(`Retrying key rotation for service ${service} (attempt ${attempt}) in ${delay}ms`);
 
         setTimeout(async () => {
@@ -305,10 +305,10 @@ export class GeminiKeyProvider implements KeyProvider {
         }
     }
 
-    async generateKey(service: string): Promise<string> {
+    generateKey(_service: string): Promise<string> {
         // For Gemini, we rotate through the pool rather than generating new keys
         this.currentIndex = (this.currentIndex + 1) % this.keyPool.length;
-        return this.keyPool[this.currentIndex];
+        return Promise.resolve(this.keyPool[this.currentIndex]);
     }
 
     async validateKey(service: string, key: string, signal?: AbortSignal): Promise<boolean> {

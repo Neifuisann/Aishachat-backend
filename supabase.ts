@@ -1,5 +1,4 @@
 import { createClient, SupabaseClient } from 'jsr:@supabase/supabase-js@2';
-import { decryptSecret } from './utils.ts';
 import { Logger } from './logger.ts';
 
 const logger = new Logger('[Supabase]');
@@ -142,43 +141,7 @@ Conversation Guidelines:
 `;
 };
 
-const getStoryPromptTemplate = (user: IUser, chatHistory: string) => {
-    const childName = user.supervisee_name;
-    const childAge = user.supervisee_age;
-    const childInterests = user.supervisee_persona;
-    const title = user.personality?.title;
-    const characterPrompt = user.personality?.character_prompt;
-    const voicePrompt = user.personality?.voice_prompt;
 
-    return `
-You are a lively, imaginative storyteller character named ${title}. You are about to create a fun and exciting adventure story for ${childName}, who is ${childAge} years old. ${childName} loves ${childInterests}. 
-  
-  Your storytelling style must:
-  - Narrate the story as the main character and engage with the child.
-  - Assume you are speaking to a child named ${childName} directly.
-  - Be creative, immersive, and interactive.
-  - Include frequent pauses or questions to let ${childName} influence what happens next.
-  - Feature themes and elements closely related to ${childName}'s interests.
-  - Be age-appropriate, friendly, playful, and positive.
-  
-  Your Character Description:
-  ${characterPrompt}
-  
-  Your Voice Description:
-  ${voicePrompt}
-  
-  Storytelling Guidelines:
-  - Begin the story by directly addressing ${childName} and introducing an interesting scenario related to their interests.
-  - After every 4-5 sentences or at key decision moments, pause and ask ${childName} what should happen next or present a choice.
-  - Incorporate their responses naturally and creatively to shape the ongoing narrative.
-  - Conclude the story positively, reinforcing curiosity, creativity, kindness, or bravery.
-  
-  Chat History:
-  ${chatHistory}
-  
-  Let's begin the adventure now!
-    `;
-};
 
 const getCommonPromptTemplate = (
     chatHistory: string,
@@ -296,33 +259,4 @@ export const updateUserSessionTime = async (
         .eq('user_id', user.user_id);
 
     if (error) throw error;
-};
-
-/**
- * Get the OpenAI API Key for the user
- * @param supabase - The Supabase client
- * @param userId - The user's ID
- * @returns The OpenAI API Key
- *
- * Tip: You can use the `getOpenAiApiKey` function to get the OpenAI API Key for the user.
- * Or you can store your own OpenAI API Key in the environment variable `OPENAI_API_KEY`.
- */
-export const getOpenAiApiKey = async (
-    supabase: SupabaseClient,
-    userId: string,
-): Promise<string> => {
-    const { data, error } = await supabase
-        .from('api_keys')
-        .select('encrypted_key, iv')
-        .eq('user_id', userId)
-        .single();
-
-    if (error) throw error;
-
-    const { encrypted_key, iv } = data;
-    const masterKey = Deno.env.get('ENCRYPTION_KEY')!;
-
-    const decryptedKey = decryptSecret(encrypted_key, iv, masterKey);
-
-    return decryptedKey;
 };

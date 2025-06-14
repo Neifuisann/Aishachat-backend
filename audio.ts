@@ -1,8 +1,6 @@
 import { Encoder } from '@evan/opus';
 import {
-    ADPCM_ENABLED,
     MIC_INPUT_GAIN,
-    MIC_SAMPLE_RATE,
     TTS_FRAME_SIZE_BYTES,
     TTS_SAMPLE_RATE,
 } from './config.ts';
@@ -200,12 +198,12 @@ export class AudioFilter {
             const xn = samples[i]; // Current input sample
 
             // Apply High-Pass Filter Stage (Direct Form II Transposed)
-            let hp_yn = this.hp_b0 * xn + this.hp_x1;
+            const hp_yn = this.hp_b0 * xn + this.hp_x1;
             this.hp_x1 = this.hp_b1 * xn - this.hp_a1 * hp_yn + this.hp_x2;
             this.hp_x2 = this.hp_b2 * xn - this.hp_a2 * hp_yn;
 
             // Apply Low-Pass Filter Stage to the output of the high-pass stage
-            let lp_yn = this.lp_b0 * hp_yn + this.lp_x1;
+            const lp_yn = this.lp_b0 * hp_yn + this.lp_x1;
             this.lp_x1 = this.lp_b1 * hp_yn - this.lp_a1 * lp_yn + this.lp_x2;
             this.lp_x2 = this.lp_b2 * hp_yn - this.lp_a2 * lp_yn;
 

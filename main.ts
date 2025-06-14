@@ -1,38 +1,19 @@
 import './config.ts';
 
-import { Buffer } from 'node:buffer';
 import { createServer } from 'node:http';
-import { WebSocket as WSWebSocket, WebSocketServer } from 'npm:ws';
-import type { RawData, WebSocketServer as _WSS } from 'npm:ws'; // Use _WSS alias
+import { WebSocketServer } from 'npm:ws';
+import type { WebSocketServer as _WSS } from 'npm:ws'; // Use _WSS alias
 
-import { createClient, type SupabaseClient } from 'jsr:@supabase/supabase-js@2';
-
-import { Encoder } from '@evan/opus';
 import { Logger } from './logger.ts';
 
 const logger = new Logger('[Main]');
 
 import { authenticateUser } from './utils.ts';
-import {
-    addConversation,
-    createFirstMessage,
-    createSystemPrompt,
-    getChatHistory,
-    getDeviceInfo,
-    getSupabaseClient,
-    updateUserSessionTime,
-} from './supabase.ts';
+import { getSupabaseClient } from './supabase.ts';
 import { setupWebSocketConnectionHandler } from './websocket_handler.ts';
 import { audioDebugManager } from './audio_debug.ts';
 
-import {
-    HOST,
-    isDev,
-    MIC_SAMPLE_RATE,
-    PORT,
-    TTS_FRAME_SIZE_BYTES,
-    TTS_SAMPLE_RATE,
-} from './config.ts';
+import { HOST, isDev, PORT } from './config.ts';
 
 logger.info('Initializing server...');
 
@@ -154,7 +135,7 @@ Deno.addSignalListener('SIGINT', async () => {
             logger.error('Error in forced audio debug cleanup:', err);
         }
         Deno.exit(1);
-    }, 10000); // 10 seconds timeout (increased from 5)
+    }, 5);
 });
 
 logger.info('Server setup complete.');

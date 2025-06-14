@@ -7,7 +7,6 @@ import {
     getCurrentTimeUTC7,
     getTodayUTC7,
     isValidDateFormat,
-    isValidTimeFormat,
     parseTimeInput,
     shouldScheduleTriggerToday,
 } from './time_utils.ts';

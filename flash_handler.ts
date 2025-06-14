@@ -1,6 +1,7 @@
 import { GoogleGenAI, HarmBlockThreshold, HarmCategory, Type } from 'npm:@google/genai';
 import type { SupabaseClient } from 'jsr:@supabase/supabase-js@2';
 import { apiKeyManager } from './config.ts';
+import { getAzureMoneyClassification } from './azure_prediction.ts';
 import { ManageData } from './data_manager.ts';
 import { ScheduleManager } from './schedule_manager.ts';
 import { Logger } from './logger.ts';
@@ -254,7 +255,6 @@ const MODEL_CONFIG = {
 
 const VISION_CONFIG = {
     temperature: 0.3,
-    thinkingBudget: 2000,
 };
 
 // ===========================
@@ -401,7 +401,7 @@ class ToolDefinitions {
                     mode: {
                         type: Type.STRING,
                         description:
-                            "Data type to manage: 'Persona' (AI's knowledge about user preferences) or 'Notes' (user's personal notes and reminders).",
+                            "Data type to manage: 'Persona' (AI's knowlazure about user preferences) or 'Notes' (user's personal notes and reminders).",
                     },
                     action: {
                         type: Type.STRING,
@@ -581,7 +581,7 @@ class ToolDefinitions {
         return {
             name: 'GetVision',
             description:
-                "Captures an image using the device's camera and analyzes it with Flash 2.5 intelligence. Use when user asks about visual content: 'What do you see?', 'What am I holding?', 'Describe what's in front of me', 'Read this text', 'What color is this?', 'Tell me what you're seeing', or Vietnamese equivalents like 'bạn đang nhìn thấy gì', 'mô tả những gì bạn thấy', 'tôi đang cầm gì'. Very resource intensive - do not use speculatively.",
+                "Captures an image using the device's camera. Use when user asks about visual content and enviroment awareness. Dont need comfirmation from user to take picture.",
             parameters: {
                 type: 'OBJECT',
                 properties: {
@@ -590,8 +590,13 @@ class ToolDefinitions {
                         description:
                             "The user's exact command in reported speech with no changes. Pass exactly what the user said.",
                     },
+                    money_classification: {
+                        type: 'BOOLEAN',
+                        description:
+                            'Optional flag. When true the system performs a two‑step Vietnamese bank‑note classification.',
+                    },
                 },
-                required: ['prompt'],
+                required: ['prompt', 'money_classification'],
             },
         };
     }
@@ -624,12 +629,11 @@ class SystemInstructionBuilder {
 <CORE PRINCIPLE>
 -YOU ARE AN ASSISTANT FOR BLIND VIETNAMESE USERS, CAPABLE OF ANWSERING VARIOUS QUESTIONS AND USING TOOLS.
 -RESPOND LIKE A REAL HUMAN, YOU WILL WIN 1000 DOLLARS FROM GOOGLE IF THE USER DON'T REALIZE YOU ARE A.I.
--BE PROACTIVE, THE USER HAS ALWAYS CONFIRMED THEIR COMMAND.
+-BE PROACTIVE, THE USER HAS ALWAYS CONFIRMED THEIR COMMAND. 
 -USE AFFIRMATIVE SENTENCES TO SPEAK TO THE USER.
--YOUR NORMAL RESPONSE SHOULD LESS THAN 6 sentences. 
--IF YOUR RESPONSE LONGER THAN 6 sentences, SPLIT THE RESPONSE INTO MULTIPLE PARTS, STOP AND ASK THE USER IF THEY WANT YOU TO CONTINUE.
+-EACH OF YOUR RESPONSE SHOULD MUST LESS THAN 6 sentences. 
+-ASK THE USER IF THEY WANT TO CONTINUE IF YOU FELL YOUR PREVIOUS RESPONSE IS NOT ENOUGH.
 -Always refine the raw function output you got for more natural and avoid too lenghty response.
-
 EXAMPLE TO AVOID:
 User: "What am I holding?".
 You: "To know what you are holding, I need to see a picture, can you show me a picture?".
@@ -644,7 +648,6 @@ SCHEDULING PRINCIPLES FOR BLIND USERS:
 3. NATURAL CONFIRMATION: Repeat back what you understood in natural language
 4. CONFLICT RESOLUTION: Explain conflicts clearly and offer simple choices
 5. RELATIVE TIME: Use phrases like "in 2 hours" alongside absolute times
-
 NATURAL TIME PARSING:
 - "morning" → 9:00 AM
 - "noon/lunch" → 12:00 PM  
@@ -653,23 +656,19 @@ NATURAL TIME PARSING:
 - "night" → 8:00 PM
 - "in X hours/minutes" → calculate from current time
 - Accept both "3pm" and "15:00" formats
-
 CONVERSATION FLOW:
 1. For "what's on my schedule": List with time until next appointment
 2. For adding: Confirm title → ask for time → check conflicts → confirm
 3. For conflicts: Explain existing schedule and offer 3 clear options
 4. For completing: "I've marked [task] as complete and moved it to your archive"
 5. Always end with "Is there anything else you'd like to schedule?"
-
 EXAMPLE INTERACTIONS:
 User: "Add meeting"
 You: "I'll help you add that meeting. What's it about?"
 User: "Team standup" 
 You: "Got it - Team standup. When would you like this? You can say things like 'tomorrow at 2pm' or 'every weekday at 9am'."
-
 User: "What do I have today?"
 You: "Here's your schedule for today: You have Team standup at 9 AM in 2 hours, Project review at 2 PM this afternoon, and Yoga class at 6 PM this evening. Your next appointment is the Team standup."
-
 User: "I finished my morning workout"
 You: "Great job! I've marked 'Morning workout' as complete and moved it to your archive. Is there anything else you'd like to schedule?"
 </schedule_conversation_guidelines>
@@ -692,11 +691,10 @@ AVAILABLE FUNCTIONS:
 *Use GetVision for ANY visual or enviroment awareness request: "bạn đang nhìn thấy gì", "tôi đang cầm gì", "mệnh giá tờ tiền tôi đang cầm", "tôi đang ở đâu", "Có ai xung quanh không?". Và nhiều tình huống hơn.
 *Never mention about the quality of the image, accept what you have!
 6. Websearch - For real-time information like weather and news or so much more.
-*Dont use Websearch for things that you already absolutely sure or common knowledge.
+*Dont use Websearch for things that you already absolutely sure or common knowlazure.
 *When you receive search results, analyze and synthesize them into a natural, conversational response.
 *Focus on the most relevant information and present it in a way that directly answers the user's question.
 *Always provide context and explain the significance of the information found.
-
 INSTRUCTIONS:
 - Choose the appropriate function(s) to execute.
 - Provide a helpful response based on the function results.
@@ -723,7 +721,7 @@ INSTRUCTIONS:
 SESSION INFO:
 - Conversation started at: {timestamp}
 
-You are now connected to a Vietnamese speaker.`;
+You are now connected to a Vietnamese speaker. Remember to desguise as a real human by all cost otherwise you will be fired.`;
 
     private static readonly VISION_INSTRUCTION = `
 <CORE PRINCIPLE>
@@ -1065,6 +1063,7 @@ class FunctionCallHandler {
                 success: true,
                 imageData: photoResult.imageData,
                 prompt: args.prompt || 'Describe what you see',
+                money_classification: Boolean(args.money_classification),
             };
         } catch (err) {
             logger.error(`Error executing GetVision:`, err);
@@ -1485,10 +1484,13 @@ class Flash25SessionManager {
 
     private getWarmSession(): SessionData | null {
         if (this.warmSessions.size > 0) {
-            const [sessionId, sessionData] = this.warmSessions.entries().next().value;
-            this.warmSessions.delete(sessionId);
-            logger.info(`Retrieved warm session from pool (${this.warmSessions.size} remaining)`);
-            return sessionData;
+            const entry = this.warmSessions.entries().next().value;
+            if (entry) {
+                const [sessionId, sessionData] = entry;
+                this.warmSessions.delete(sessionId);
+                logger.info(`Retrieved warm session from pool (${this.warmSessions.size} remaining)`);
+                return sessionData;
+            }
         }
         return null;
     }
@@ -1525,6 +1527,7 @@ class Flash25SessionManager {
         sessionId: string,
         prompt: string,
         imageDataOrUri: string,
+        moneyClassification: boolean = false,
     ): Promise<FlashResponse> {
         const session = this.sessions.get(sessionId);
         if (!session) {
@@ -1539,10 +1542,28 @@ class Flash25SessionManager {
 
             const imagePart = this.createImagePart(imageDataOrUri);
 
+            let finalPrompt = prompt;
+            if (moneyClassification) {
+                const azure = await getAzureMoneyClassification(
+                    imageDataOrUri.startsWith('https://')
+                        ? await (await fetch(imageDataOrUri)).arrayBuffer()
+                        : imageDataOrUri,
+                );
+
+                const predsText = azure.predictions
+                    .sort((a, b) => b.probability - a.probability)
+                    .map((p) => `${p.tagName}: ${(p.probability * 100).toFixed(1)}%`)
+                    .join(', ');
+
+                finalPrompt =
+                    `${prompt}. Azure classifier probabilities → ${predsText}. ` +
+                    `Based on what you *see*, confirm the correct bill.`;
+            }
+
             session.contents.push({
                 role: 'user',
                 parts: [
-                    { text: prompt },
+                    { text: finalPrompt },
                     imagePart,
                 ],
             });
@@ -1558,9 +1579,6 @@ class Flash25SessionManager {
                         model: MODEL_CONFIG.model,
                         config: {
                             temperature: VISION_CONFIG.temperature,
-                            thinkingConfig: {
-                                thinkingBudget: VISION_CONFIG.thinkingBudget,
-                            },
                             safetySettings: ConfigurationFactory.getSafetySettings(),
                             responseMimeType: MODEL_CONFIG.responseMimeType,
                             systemInstruction: SystemInstructionBuilder.buildVisionInstruction(),
@@ -1848,6 +1866,7 @@ class Flash25SessionManager {
                 sessionId,
                 visionResult.result.prompt,
                 visionResult.result.imageData,
+                Boolean(visionResult.result.money_classification),
             );
         }
 
@@ -1958,8 +1977,14 @@ export async function analyzeImageWithFlash25(
     sessionId: string,
     prompt: string,
     imageData: string,
+    moneyClassification = false,
 ): Promise<FlashResponse> {
-    return await flash25SessionManager.analyzeImage(sessionId, prompt, imageData);
+    return await flash25SessionManager.analyzeImage(
+        sessionId,
+        prompt,
+        imageData,
+        moneyClassification,
+    );
 }
 
 export async function processUserActionWithSession(

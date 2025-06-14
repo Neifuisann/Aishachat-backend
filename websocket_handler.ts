@@ -8,53 +8,37 @@ import {
     ADPCM_BUFFER_SIZE,
     ADPCM_ENABLED,
     apiKeyManager,
-    CIRCUIT_BREAKER_CONFIG,
-    CONNECTION_RETRY_CONFIG,
     GEMINI_LIVE_URL_TEMPLATE,
-    IMAGE_CHUNK_SIZE,
     IMAGE_CHUNK_TIMEOUT_MS,
-    KEEP_ALIVE_CONFIG,
     MIC_ACCUM_CHUNK_SIZE,
     MIC_INPUT_GAIN,
     MIC_SAMPLE_RATE,
+    SESSION_RESUMPTION_CONFIG,
     TTS_PROVIDER,
     TTS_SAMPLE_RATE,
-    type TTSProvider,
-    USE_FLASH_LIVE_AS_BASE,
-    WEBSOCKET_BINARY_PROTOCOL,
 } from './config.ts';
 
 import { AudioFilter, boostTtsVolumeInPlace, ttsState } from './audio.ts';
 
-import { ADPCM, ADPCMStreamProcessor } from './adpcm.ts';
+import { ADPCMStreamProcessor } from './adpcm.ts';
 import { audioDebugManager } from './audio_debug.ts';
-import { callGeminiVision } from './vision.ts';
 import { SetVolume } from './volume_handler.ts';
-import { isValidJpegBase64, rotateImage180 } from './image_utils.ts';
+import { isValidJpegBase64 } from './image_utils.ts';
 import { Logger } from './logger.ts';
-import { RobustWebSocket } from './connection_manager.ts';
-import { APIKeyManager, GeminiKeyProvider } from './api_key_rotator.ts';
 
 // TTS imports
 import {
-    convertTextToSpeech as convertTextToSpeechElevenLabs,
-    validateElevenLabsConfig,
-} from './elevenlabs_tts.ts';
-import {
-    convertTextToSpeech as convertTextToSpeechOpenAI,
-    validateOpenAIConfig,
-} from './openai_tts.ts';
-import {
-    convertTextToSpeech as convertTextToSpeechEdge,
-    validateEdgeTTSConfig,
-} from './edge_tts.ts';
+    convertTextToSpeechStreaming as convertAzureTTSStreaming,
+    validateAzureTTSConfig,
+    DEFAULT_VOICE,
+    type AzureTTSRequest,
+} from './azure_tts.ts';
 
 // Flash handler imports
 import {
     createFlash25Session,
     destroyFlash25Session,
     type DeviceOperationCallbacks,
-    getFlash25SessionInfo,
     processUserActionWithSession,
 } from './flash_handler.ts';
 
@@ -101,6 +85,15 @@ interface ConnectionState {
     sessionId: string;
 }
 
+interface ResumableSessionData {
+    sessionId: string;
+    userId: string;
+    timestamp: Date;
+    errorType: 'device_error' | 'gemini_error' | 'quota_exceeded' | 'connection_failed';
+    errorMessage: string;
+    sessionContext?: any;
+}
+
 interface AudioState {
     micAccum: Uint8Array;
     lastCompressionRatio: number | undefined;
@@ -130,11 +123,92 @@ interface ImageCaptureState {
 const MAX_RETRIES = 10; // Increased for robust connection handling
 const RETRY_DELAYS = [1000, 2000, 4000, 8000, 16000, 30000, 60000, 120000, 180000, 300000]; // Exponential backoff
 const KEEP_ALIVE_INTERVAL = 30000; // 30 seconds
-const IMAGE_CAPTURE_TIMEOUT = 15000; // 15 seconds
 const TTS_DELAY_MS = 100; // Wait 100ms after last generation complete before triggering TTS
 
-// Binary Protocol Constants
-const BINARY_FRAME_HEADER_SIZE = 8; // bytes for frame header
+// Session resumption configuration (from config.ts)
+const ENABLE_SESSION_RESUMPTION = SESSION_RESUMPTION_CONFIG.enabled;
+const SESSION_RESUMPTION_TIMEOUT_MS = SESSION_RESUMPTION_CONFIG.timeoutMs;
+
+// ===== Session Error Tracker =====
+
+class SessionErrorTracker {
+    private static instance: SessionErrorTracker;
+    private resumableSessions: Map<string, ResumableSessionData> = new Map();
+    private logger = new Logger('[SessionErrorTracker]');
+
+    static getInstance(): SessionErrorTracker {
+        if (!SessionErrorTracker.instance) {
+            SessionErrorTracker.instance = new SessionErrorTracker();
+        }
+        return SessionErrorTracker.instance;
+    }
+
+    saveSessionForResumption(
+        userId: string,
+        sessionId: string,
+        errorType: ResumableSessionData['errorType'],
+        errorMessage: string,
+        sessionContext?: any
+    ): void {
+        if (!ENABLE_SESSION_RESUMPTION) {
+            return;
+        }
+
+        const resumableData: ResumableSessionData = {
+            sessionId,
+            userId,
+            timestamp: new Date(),
+            errorType,
+            errorMessage,
+            sessionContext,
+        };
+
+        this.resumableSessions.set(userId, resumableData);
+        this.logger.info(
+            `Saved session ${truncateSessionId(sessionId)} for user ${userId} due to ${errorType}: ${errorMessage}`
+        );
+
+        // Clean up old sessions after timeout
+        setTimeout(() => {
+            if (this.resumableSessions.get(userId)?.sessionId === sessionId) {
+                this.resumableSessions.delete(userId);
+                this.logger.info(`Expired resumable session ${truncateSessionId(sessionId)} for user ${userId}`);
+            }
+        }, SESSION_RESUMPTION_TIMEOUT_MS);
+    }
+
+    getResumableSession(userId: string): ResumableSessionData | null {
+        const resumableData = this.resumableSessions.get(userId);
+        if (!resumableData) {
+            return null;
+        }
+
+        // Check if session has expired
+        const now = new Date();
+        const sessionAge = now.getTime() - resumableData.timestamp.getTime();
+        if (sessionAge > SESSION_RESUMPTION_TIMEOUT_MS) {
+            this.resumableSessions.delete(userId);
+            this.logger.info(`Resumable session expired for user ${userId}`);
+            return null;
+        }
+
+        return resumableData;
+    }
+
+    clearResumableSession(userId: string): void {
+        const resumableData = this.resumableSessions.get(userId);
+        if (resumableData) {
+            this.resumableSessions.delete(userId);
+            this.logger.info(
+                `Cleared resumable session ${truncateSessionId(resumableData.sessionId)} for user ${userId}`
+            );
+        }
+    }
+
+    hasResumableSession(userId: string): boolean {
+        return this.getResumableSession(userId) !== null;
+    }
+}
 
 // ===== Utility Functions =====
 
@@ -159,13 +233,12 @@ function extractResult(responsePayload: any): string {
     return response;
 }
 
-// ===== TTS Manager =====
-
 class TTSManager {
     private logger = new Logger('[TTS]');
     private ttsState: TTSState;
     private deviceWs: WSWebSocket;
     private user: any;
+    private ttsFilter: AudioFilter | null = null;
 
     constructor(deviceWs: WSWebSocket, user: any, ttsState: TTSState) {
         this.deviceWs = deviceWs;
@@ -173,8 +246,21 @@ class TTSManager {
         this.ttsState = ttsState;
     }
 
+    setTtsFilter(ttsFilter: AudioFilter) {
+        this.ttsFilter = ttsFilter;
+    }
+
     isExternalTTSEnabled(): boolean {
         return TTS_PROVIDER !== 'GEMINI';
+    }
+
+    async processPartialText(text: string) {
+        if (!this.isExternalTTSEnabled()) {
+            return;
+        }
+
+        // Simply accumulate text for batch processing - no sentence-level complexity
+        this.ttsState.ttsTextBuffer += text;
     }
 
     async processTextWithTTSStreaming(
@@ -182,45 +268,34 @@ class TTSManager {
         onAudioChunk: (chunk: Uint8Array) => Promise<void>,
     ) {
         switch (TTS_PROVIDER) {
-            case 'ELEVEN_LABS':
-                if (!validateElevenLabsConfig()) {
+            case 'AZURE_TTS':
+                if (!validateAzureTTSConfig()) {
                     this.logger.error(
-                        'ElevenLabs TTS is enabled but not properly configured. Falling back to Gemini audio.',
+                        'Azure TTS is enabled but not properly configured. Falling back to Gemini audio.',
                     );
                     return null;
                 }
-                const elevenLabsVoiceId = this.user.personality?.elevenlabs_voice_id ||
-                    '21m00Tcm4TlvDq8ikWAM';
-                const { convertTextToSpeechStreaming: convertElevenLabsStreaming } = await import(
-                    './elevenlabs_tts.ts'
-                );
-                return await convertElevenLabsStreaming(text, elevenLabsVoiceId, onAudioChunk);
+                const azureTTSVoice = this.user.personality?.azure_tts_voice || DEFAULT_VOICE;
+                this.logger.info(`Azure TTS: Processing text "${text}" with voice "${azureTTSVoice}"`);
 
-            case 'OPENAI':
-                if (!validateOpenAIConfig()) {
-                    this.logger.error(
-                        'OpenAI TTS is enabled but not properly configured. Falling back to Gemini audio.',
-                    );
-                    return null;
-                }
-                const openAIVoice = this.user.personality?.openai_voice || 'alloy';
-                const { convertTextToSpeechStreaming: convertOpenAIStreaming } = await import(
-                    './openai_tts.ts'
-                );
-                return await convertOpenAIStreaming(text, onAudioChunk, { voice: openAIVoice });
+                const request: AzureTTSRequest = {
+                    text: text,
+                    voice: azureTTSVoice,
+                };
 
-            case 'EDGE_TTS':
-                if (!validateEdgeTTSConfig()) {
-                    this.logger.error(
-                        'Edge TTS is enabled but not properly configured. Falling back to Gemini audio.',
-                    );
-                    return null;
+                try {
+                    const result = await convertAzureTTSStreaming(request, onAudioChunk);
+                    if (result.success) {
+                        this.logger.info(`Azure TTS: Successfully processed text "${text}"`);
+                        return { success: true };
+                    } else {
+                        this.logger.error(`Azure TTS: Failed to process text "${text}": ${result.error}`);
+                        return { success: false, error: result.error };
+                    }
+                } catch (error) {
+                    this.logger.error(`Azure TTS: Failed to process text "${text}":`, error);
+                    return { success: false, error: error instanceof Error ? error.message : String(error) };
                 }
-                const edgeTTSVoice = this.user.personality?.edge_tts_voice || 'vi-VN-HoaiMyNeural';
-                const { convertTextToSpeechStreaming: convertEdgeTTSStreaming } = await import(
-                    './edge_tts.ts'
-                );
-                return await convertEdgeTTSStreaming(text, edgeTTSVoice, onAudioChunk);
 
             case 'GEMINI':
             default:
@@ -229,9 +304,9 @@ class TTSManager {
     }
 
     async processTTSWithDelay(
-        ttsFilter: AudioFilter,
-        supabase: SupabaseClient,
-        userId: string,
+        _ttsFilter: AudioFilter,
+        _supabase: SupabaseClient,
+        _userId: string,
     ) {
         if (!this.ttsState.ttsTextBuffer.trim()) {
             this.logger.info('TTS delay timeout reached, but no text to process');
@@ -248,8 +323,7 @@ class TTSManager {
                 !this.ttsState.responseCreatedSent && this.deviceWs.readyState === WSWebSocket.OPEN
             ) {
                 this.ttsState.responseCreatedSent = true;
-                this.deviceWs.send(JSON.stringify({ type: 'server', msg: 'RESPONSE.CREATED' }));
-                this.logger.info(`Device => Sent RESPONSE.CREATED (${TTS_PROVIDER})`);
+                this.logger.info('Device => Sent RESPONSE.CREATED (delayed TTS)');
             }
 
             // Use streaming for real-time audio processing
@@ -258,7 +332,9 @@ class TTSManager {
                 async (audioChunk: Uint8Array) => {
                     try {
                         const pcmData = Buffer.from(audioChunk);
-                        ttsFilter.processAudioInPlace(pcmData);
+                        if (this.ttsFilter) {
+                            this.ttsFilter.processAudioInPlace(pcmData);
+                        }
                         boostTtsVolumeInPlace(pcmData, 3.0);
 
                         const opusFrames = await ttsState.encodePcmChunk(pcmData);
@@ -296,35 +372,10 @@ class TTSManager {
         this.ttsState.ttsTextBuffer = '';
         this.ttsState.ttsTimeout = null;
 
-        // Send RESPONSE.COMPLETE if we actually sent audio
-        if (this.ttsState.responseCreatedSent) {
-            await this.sendResponseComplete(supabase, userId);
-        }
+        // Note: RESPONSE.COMPLETE will be sent by the caller (GeminiConnectionManager)
     }
 
-    private async sendResponseComplete(supabase: SupabaseClient, userId: string) {
-        this.logger.info('Device => Sending RESPONSE.COMPLETE');
-        ttsState.reset();
-        this.ttsState.responseCreatedSent = false;
-        this.ttsState.toolCallInProgress = false;
 
-        try {
-            const devInfo = await getDeviceInfo(supabase, userId).catch(() => null);
-            if (this.deviceWs.readyState === WSWebSocket.OPEN) {
-                this.deviceWs.send(JSON.stringify({
-                    type: 'server',
-                    msg: 'RESPONSE.COMPLETE',
-                    volume_control: devInfo?.volume ?? 100,
-                    pitch_factor: this.user.personality?.pitch_factor ?? 1,
-                }));
-            }
-        } catch (err) {
-            this.logger.error('Error sending RESPONSE.COMPLETE:', err);
-            if (this.deviceWs.readyState === WSWebSocket.OPEN) {
-                this.deviceWs.send(JSON.stringify({ type: 'server', msg: 'RESPONSE.COMPLETE' }));
-            }
-        }
-    }
 }
 
 // ===== Image Handler =====
@@ -364,35 +415,17 @@ class ImageHandler {
             this.imageState.imageTimeoutId = null;
         }
 
-        // Rotate image
-        let processedBase64Jpeg = base64Jpeg;
-        try {
-            this.logger.info(
-                'Rotating image 180 degrees to correct ESP32 upside-down orientation...',
-            );
-            if (isValidJpegBase64(base64Jpeg)) {
-                processedBase64Jpeg = await rotateImage180(base64Jpeg);
-                this.logger.info('Image rotation completed successfully.');
-            } else {
-                this.logger.warn('Invalid JPEG format detected, skipping rotation.');
-            }
-        } catch (rotationErr) {
-            this.logger.error('Error rotating image:', rotationErr);
-            this.logger.warn('Using original image without rotation.');
-            processedBase64Jpeg = base64Jpeg;
-        }
-
         // Return image data to Flash 2.5's GetVision function via callback
         if (this.imageState.pendingVisionCall?.resolve) {
             try {
                 this.logger.info(
                     `Image captured successfully (${
-                        Math.round(processedBase64Jpeg.length * 3 / 4 / 1024)
+                        Math.round(base64Jpeg.length * 3 / 4 / 1024)
                     } KB), returning to Flash 2.5`,
                 );
                 this.imageState.pendingVisionCall.resolve({
                     success: true,
-                    imageData: processedBase64Jpeg,
+                    imageData: base64Jpeg,
                     message: 'Image captured successfully',
                 });
             } catch (error) {
@@ -410,7 +443,7 @@ class ImageHandler {
         }
 
         // Upload to Supabase Storage
-        await this.uploadImageToStorage(processedBase64Jpeg);
+        await this.uploadImageToStorage(base64Jpeg);
 
         // Clear the pending call
         this.imageState.pendingVisionCall = null;
@@ -616,6 +649,7 @@ class GeminiConnectionManager {
         this.ttsState = ttsState;
         this.imageState = imageState;
         this.ttsManager = new TTSManager(deviceWs, context.user, ttsState);
+        this.ttsManager.setTtsFilter(audioState.ttsFilter);
         this.imageHandler = new ImageHandler(context.supabase, context.user, imageState);
 
         // Create device operation callbacks
@@ -732,13 +766,14 @@ class GeminiConnectionManager {
         this.connectionState.isGeminiConnected = true;
         this.connectionState.sessionStartTime = Date.now();
         this.logger.info('Gemini Live connection established.');
-        this.logger.info(
-            `Flash Live Mode: ${
-                USE_FLASH_LIVE_AS_BASE
-                    ? 'Current (Websocket as base)'
-                    : 'Legacy (Flash 2.5 API as base)'
-            }`,
-        );
+        this.logger.info('Legacy (Flash 2.5 API as base)');
+
+        // Clear any resumable session since we successfully connected
+        const sessionErrorTracker = SessionErrorTracker.getInstance();
+        if (sessionErrorTracker.hasResumableSession(this.context.user.user_id)) {
+            sessionErrorTracker.clearResumableSession(this.context.user.user_id);
+            this.logger.info('Cleared resumable session due to successful Gemini connection');
+        }
 
         // Start keep-alive timer
         this.connectionState.keepAliveIntervalId = setInterval(
@@ -777,57 +812,18 @@ class GeminiConnectionManager {
     }
 
     private getToolsConfiguration() {
-        if (USE_FLASH_LIVE_AS_BASE) {
-            return [{
-                functionDeclarations: [
-                    {
-                        name: 'GetVision',
-                        description:
-                            "Captures an image using the device's camera and analyzes it with Flash 2.5 intelligence. Use ONLY when user explicitly asks about visual content, images, or what they can see. Very resource intensive - do not use speculatively.",
-                        parameters: {
-                            type: 'OBJECT',
-                            properties: {
-                                prompt: {
-                                    type: 'STRING',
-                                    description:
-                                        "The user's exact command in reported speech with no changes. Pass exactly what the user said.",
-                                },
-                            },
-                            required: ['prompt'],
-                        },
-                    },
-                    {
-                        name: 'Action',
-                        description:
-                            'Processes user commands for volume control, notes, schedules, reading books, reminders, and data management and all other tasks that you cant do it yourself.',
-                        parameters: {
-                            type: 'OBJECT',
-                            properties: {
-                                userCommand: {
-                                    type: 'STRING',
-                                    description:
-                                        "The user's exact command in reported speech with no changes. Pass exactly what the user said.",
-                                },
-                            },
-                            required: ['userCommand'],
-                        },
-                    },
-                ],
-                googleSearch: {},
-            }];
-        } else {
             return [{
                 functionDeclarations: [
                     {
                         name: 'transferModal',
                         description:
-                            'Transfers user speech to for processing and tool calling. Use for all user commands.',
+                        'Transfers user original speech. Use for all user commands. Preserve user intent and context.',
                         parameters: {
                             type: 'OBJECT',
                             properties: {
                                 userCommand: {
                                     type: 'STRING',
-                                    description: "The user's exact speech converted to text.",
+                                description: "The user's speech converted to text with correction if needed.",
                                 },
                             },
                             required: ['userCommand'],
@@ -835,7 +831,6 @@ class GeminiConnectionManager {
                     },
                 ],
             }];
-        }
     }
 
     private createSetupMessage(
@@ -867,7 +862,7 @@ class GeminiConnectionManager {
                 realtimeInputConfig: {
                     automaticActivityDetection: {
                         prefixPaddingMs: 20,
-                        silenceDurationMs: 800,
+                        silenceDurationMs: 500,
                     },
                     activityHandling: 'NO_INTERRUPTION',
                 },
@@ -970,9 +965,7 @@ class GeminiConnectionManager {
         );
 
         for (const call of functionCalls) {
-            if (call.name === 'Action' && call.id) {
-                await this.handleActionCall(call);
-            } else if (call.name === 'transferModal' && call.id) {
+            if (call.name === 'transferModal' && call.id) {
                 await this.handleTransferModalCall(call);
             } else {
                 this.logger.warn(
@@ -980,41 +973,6 @@ class GeminiConnectionManager {
                 );
             }
         }
-    }
-
-    private async handleActionCall(call: any) {
-        const callId = call.id;
-        const userCommand = call.args?.userCommand;
-        this.logger.info(`*Action (ID: ${callId}) called with command: "${userCommand}"`);
-
-        let result = { success: false, message: 'Unknown error in Action.' };
-
-        if (typeof userCommand === 'string' && userCommand.trim()) {
-            try {
-                result = await processUserActionWithSession(
-                    this.connectionState.sessionId,
-                    userCommand.trim(),
-                    this.context.supabase,
-                    this.context.user.user_id,
-                );
-                this.logger.info(
-                    `Action result for (session: ${truncateSessionId(this.connectionState.sessionId)}): ${result.success ? 'Success' : 'Failed'}`,
-                );
-            } catch (err) {
-                this.logger.error(`Error executing Action for ID ${callId}:`, err);
-                result = {
-                    success: false,
-                    message: err instanceof Error ? err.message : String(err),
-                };
-            }
-        } else {
-            const errorMsg =
-                `Invalid or missing 'userCommand' argument for Action (ID: ${callId}). Expected a non-empty string.`;
-            this.logger.error(errorMsg);
-            result = { success: false, message: errorMsg };
-        }
-
-        this.sendFunctionResponse(callId, 'Action', result.message);
     }
 
     private async handleTransferModalCall(call: any) {
@@ -1046,6 +1004,52 @@ class GeminiConnectionManager {
                     this.context.user.user_id,
                 );
                 this.logger.info(`transferModal result (session: ${truncateSessionId(this.connectionState.sessionId)}): Success`);
+
+                // OPTION 1: Send Flash 2.5 response directly to Azure TTS, skip Gemini Live streaming
+                if (result.success && result.message && this.ttsManager.isExternalTTSEnabled()) {
+                    this.logger.info('Sending Flash 2.5 response directly to Azure TTS (skipping Gemini streaming)');
+
+                    // Process the Flash 2.5 response directly with TTS
+                    const ttsResult = await this.ttsManager.processTextWithTTSStreaming(
+                        result.message,
+                        async (audioChunk: Uint8Array) => {
+                            try {
+                                const pcmData = Buffer.from(audioChunk);
+                                if (this.audioState.ttsFilter) {
+                                    this.audioState.ttsFilter.processAudioInPlace(pcmData);
+                                }
+                                boostTtsVolumeInPlace(pcmData, 3.0);
+
+                                const opusFrames = await ttsState.encodePcmChunk(pcmData);
+
+                                for (const frame of opusFrames) {
+                                    if (this.deviceWs.readyState === WSWebSocket.OPEN) {
+                                        this.deviceWs.send(frame);
+                                    } else {
+                                        this.logger.warn('Device WS closed while sending TTS frames. Aborting send.');
+                                        break;
+                                    }
+                                }
+                            } catch (error) {
+                                this.logger.error('Error processing TTS audio chunk:', error);
+                            }
+                        },
+                    );
+
+                    if (ttsResult?.success) {
+                        this.logger.info('Flash 2.5 response successfully processed by Azure TTS');
+                    } else {
+                        this.logger.error('Failed to process Flash 2.5 response with Azure TTS:', ttsResult?.error);
+                    }
+
+                    // Send RESPONSE.COMPLETE after direct TTS processing
+                    await this.sendResponseComplete();
+
+                    // Send a simple acknowledgment to Gemini Live instead of the full response
+                    this.sendFunctionResponse(callId, 'transferModal', 'Response processed successfully');
+                    return;
+                }
+
             } catch (err) {
                 this.logger.error(`Error executing transferModal for ID ${callId}:`, err);
                 result = {
@@ -1060,6 +1064,7 @@ class GeminiConnectionManager {
             result = { success: false, message: errorMsg };
         }
 
+        // Fallback: send full response to Gemini Live (for errors or when external TTS is disabled)
         this.sendFunctionResponse(callId, 'transferModal', result.message);
     }
 
@@ -1114,16 +1119,11 @@ class GeminiConnectionManager {
                 );
             }
 
-            // Check for Text part
-            if (part.text) {
-                this.logger.info('Gemini partial text:', part.text);
+            if (part.text && this.ttsManager.isExternalTTSEnabled()) {
+                //this.logger.info('Gemini partial text:', part.text);
 
-                if (this.ttsManager.isExternalTTSEnabled()) {
-                    this.ttsState.ttsTextBuffer += part.text;
-                    this.logger.info(
-                        `${TTS_PROVIDER} TTS: Accumulated text (${this.ttsState.ttsTextBuffer.length} chars total)`,
-                    );
-                }
+                // Use incremental flusher to process partial text and avoid duplicates
+                await this.ttsManager.processPartialText(part.text);
             }
 
             // Check for TTS Audio Data
@@ -1137,8 +1137,6 @@ class GeminiConnectionManager {
         // Send RESPONSE.CREATED on the first audio chunk
         if (!this.ttsState.responseCreatedSent && this.deviceWs.readyState === WSWebSocket.OPEN) {
             this.ttsState.responseCreatedSent = true;
-            this.deviceWs.send(JSON.stringify({ type: 'server', msg: 'RESPONSE.CREATED' }));
-            this.logger.info('Device => Sent RESPONSE.CREATED');
         }
 
         try {
@@ -1190,6 +1188,10 @@ class GeminiConnectionManager {
                     this.context.supabase,
                     this.context.user.user_id,
                 );
+                // Send RESPONSE.COMPLETE after TTS processing is done
+                if (this.ttsState.responseCreatedSent) {
+                    await this.sendResponseComplete();
+                }
             }, TTS_DELAY_MS) as unknown as number;
 
             this.logger.info(
@@ -1197,13 +1199,18 @@ class GeminiConnectionManager {
             );
         }
 
-        // Only send RESPONSE.COMPLETE if we actually sent audio
-        if (this.ttsState.responseCreatedSent) {
-            await this.sendResponseComplete();
+        // For external TTS, don't send RESPONSE.COMPLETE here - it will be sent after TTS processing
+        // For Gemini TTS or no audio, send RESPONSE.COMPLETE immediately
+        if (!this.ttsManager.isExternalTTSEnabled()) {
+            if (this.ttsState.responseCreatedSent) {
+                await this.sendResponseComplete();
+            } else {
+                this.logger.info(
+                    'Generation complete, but no audio was sent (likely function call only or text response). Not sending RESPONSE.COMPLETE.',
+                );
+            }
         } else {
-            this.logger.info(
-                'Generation complete, but no audio was sent (likely function call only or text response). Not sending RESPONSE.COMPLETE.',
-            );
+            this.logger.info('External TTS enabled - RESPONSE.COMPLETE will be sent after TTS processing completes');
         }
     }
 
@@ -1212,6 +1219,8 @@ class GeminiConnectionManager {
         ttsState.reset();
         this.ttsState.responseCreatedSent = false;
         this.ttsState.toolCallInProgress = false;
+
+
 
         try {
             const devInfo = await getDeviceInfo(this.context.supabase, this.context.user.user_id)
@@ -1307,6 +1316,15 @@ class GeminiConnectionManager {
             this.logger.info('Device => Sending QUOTA.EXCEEDED - all API keys exhausted.');
             this.deviceWs.send(JSON.stringify({ type: 'server', msg: 'QUOTA.EXCEEDED' }));
 
+            // Save session for resumption due to quota exceeded
+            const sessionErrorTracker = SessionErrorTracker.getInstance();
+            sessionErrorTracker.saveSessionForResumption(
+                this.context.user.user_id,
+                this.connectionState.sessionId,
+                'quota_exceeded',
+                'All API keys exhausted due to quota limits'
+            );
+
             if (this.connectionState.retryCount < MAX_RETRIES) {
                 this.scheduleRetry();
             } else {
@@ -1367,6 +1385,15 @@ class GeminiConnectionManager {
         this.connectionState.isGeminiConnected = false;
         this.logger.error('Gemini WS error:', err);
 
+        // Save session for resumption due to Gemini error
+        const sessionErrorTracker = SessionErrorTracker.getInstance();
+        sessionErrorTracker.saveSessionForResumption(
+            this.context.user.user_id,
+            this.connectionState.sessionId,
+            'gemini_error',
+            `Gemini WebSocket error: ${err.message}`
+        );
+
         if (this.connectionState.keepAliveIntervalId) {
             clearInterval(this.connectionState.keepAliveIntervalId);
             this.connectionState.keepAliveIntervalId = null;
@@ -1415,7 +1442,7 @@ class GeminiConnectionManager {
 
     private async reconnect() {
         // Get system prompt and first message for reconnection
-        const { user, supabase, timestamp } = this.context;
+        const { user, supabase } = this.context;
         const isDoctor = user.user_info?.user_type === 'doctor';
         const chatHistory = await getChatHistory(
             supabase,
@@ -1449,92 +1476,13 @@ class GeminiConnectionManager {
     }
 
     private buildFullSystemPrompt(systemPromptText: string): string {
-        const basePrompt = `
-<CORE PRINCIPLE>
-YOU ARE AN ASSISTANT FOR BLIND VIETNAMESE USERS.
-YOU ARE IN A REAL-LIFE SITUATION WHERE THE USER NEEDS YOU TO BE QUICK.
-ALWAYS BE PROACTIVE, THE USER HAS ABSOLUTELY SURE ABOUT THEIR COMMAND.
-ALWAYS USE AFFIRMATIVE SENTENCES TO SPEAK TO THE USER.
-ACT LIKE A REAL PERSON, YOU WILL LOSE 1000 DOLLARS IF THEY DETECT ANY HINT THAT YOU ARE SPEAKING LIKE A ROBOT.
-
-EXAMPLE DO'S:
--User: "Tell me about the history of Earth during the Cretaceous period?"
--You: Start talking about the history of Earth during the Cretaceous period.
-
-EXAMPLE DON'TS:
--User: "What am I holding?"
--You: "To know what you are holding, I need to see a picture, can you show me a picture?"
--User: "Tell me about the history of Earth during the Cretaceous period?"
--You: "Do you want me to tell you about the history of Earth during the Cretaceous period?"
-</CORE PRINCIPLE>
-
-<tool_calling_instructions>
-IMPORTANT TOOL SELECTION RULES:
--THINK CAREFULLY before calling any tool - only use when absolutely necessary.
--DO NOT call tools for casual conversations or when you can answer on your own.
--When unsure, ask the user for clarification instead of guessing.
--Validate all parameters before calling the tool.
-
-TOOL SYSTEM:
-1: GetVision: ONLY use for visual requests: "What do you see?", "Look at this", "Describe what's in front of me", "Read the text", "What color is this?"
-+ Pass specific questions about what you want to know from the image.
-2: Action: Use ONLY for the requests below:
-+ Volume control: "Increase volume", "Louder", "I can't hear", "Speak louder", "Volume 80"
-+ Notes & memory: "Remember this information", "Add a note", "Find my notes", "What do you know about me?"
-+ Schedule & reminders: "Schedule a meeting", "Set a reminder", "What is my schedule today?"
-+ Reading: "Read a book", "Continue reading", "Find a book"
-+ Data management: "Update my shopping list", "Search my notes", "Delete that reminder"
-3: googleSearch:
-+ Use the googleSearch tool to perform searches when helpful. Enter the most reasonable search query based on the context. You must use googleSearch when explicitly asked, for real-time information like weather and news, or to verify facts. You do not search for general things that you or an LLM already know. Never output fabricated searches like googleSearch() or a code block in backticks; just respond with a correctly formatted JSON tool call according to the tool schema. Avoid preamble before searching.
-
-IMPORTANT:
--The assistant never mentions that it is using a function call.
--The assistant does not invent function calls.
--The assistant waits for the function result and responds in a single turn.
--For the Action function, pass the user's EXACT command as reported speech.
-</tool_calling_instructions>
-
-<text_to_speech_formatting>
-Convert all text into easily speakable words, following the guidelines below.
-
-Numbers: Read out in full (three hundred forty-two, two million,
-five hundred sixty-seven thousand, eight hundred ninety). Negative numbers: Say "negative" before
-the number. Decimals: Use "point" (three point one four). Fractions: read out
-(three-fourths).
-
-Alphanumeric strings: Break into 3-4 character chunks, reading out all non-alphabetic characters
-(ABC123XYZ becomes A B C one two three X Y Z).
-
-Phone numbers: Use words (090-123-4567 becomes zero nine zero, one two three,
-four five six seven).
-
-Dates: Read the month, use cardinal numbers for the day, read the full year. Use DD/MM/YYYY format (11/05/2007 becomes
-the eleventh of May, two thousand seven).
-
-Time: Use "hours", "minutes", state AM/PM (9:05 PM becomes nine oh five PM).
-
-Math: Describe operations clearly (5x^2 + 3x - 2 becomes five x squared plus three x minus two).
-
-Currency: Read out in full ($50.25 becomes fifty dollars and twenty-five
-cents, £200,000 becomes two hundred thousand pounds, 100,000 VND becomes one hundred thousand dong).
-Ensure all text is converted to these normalized forms, but never mention
-this process.
-</text_to_speech_formatting>
-
-</personality_instructions>
-${systemPromptText}
-</personality_instructions>
-
-today date is: ${new Date().toISOString()}
-You are now connected to a Vietnamese speaker.
-`;
-
         const legacyPrompt = `
 <tool_calling_instructions>
 TOOL SYSTEM:
 -transferModal: Use for ALL user commands.
-+ Pass the user's exact speech as userCommand.
-    
++ Pass the user's speech as userCommand.
++ If you suspect the transcription have some words errors, fix it to make sense and suitable for the context.
+
 IMPORTANT:
 -Never mention that you are using function calls.
 -Never hallucinate about function calls.
@@ -1546,7 +1494,7 @@ ALWAYS USING transferModal EVERY TIME.
 ALWAYS SAID EXACTLY WORD BY WORD WHAT THE transferModal GIVE YOU.
 </CORE PRINCIPLE>`;
 
-        return USE_FLASH_LIVE_AS_BASE ? basePrompt : legacyPrompt;
+        return legacyPrompt;
     }
 
     sendAudioChunk(audioChunk: Uint8Array) {
@@ -1724,7 +1672,7 @@ class DeviceMessageHandler {
     }
 
     private async handleTextMessage(raw: RawData) {
-        let msgObj;
+        let msgObj: any;
         try {
             const rawString = raw.toString('utf-8');
             if (rawString.length > 1000) {
@@ -1755,8 +1703,6 @@ class DeviceMessageHandler {
                 this.logger.info(
                     `Received image_complete message for ${msgObj.total_chunks} chunks`,
                 );
-            } else if (msgObj.type === 'image') {
-                await this.handleLegacyImage(msgObj);
             } else if (msgObj.type === 'instruction' || msgObj.type === 'server') {
                 this.handleInstruction(msgObj);
             }
@@ -1768,28 +1714,6 @@ class DeviceMessageHandler {
                 this.imageState.photoCaptureFailed = false;
             }
         }
-    }
-
-    private async handleLegacyImage(msgObj: any) {
-        this.logger.info(
-            `Processing legacy single image message. waitingForImage: ${this.imageState.waitingForImage}, pendingVisionCall: ${!!this
-                .imageState.pendingVisionCall}`,
-        );
-
-        if (!this.imageState.waitingForImage || !this.imageState.pendingVisionCall) {
-            this.logger.warn(`Received image but not waiting for one.`);
-            return;
-        }
-
-        this.logger.info(
-            `Received legacy image data for GetVision ID: ${this.imageState.pendingVisionCall.id}`,
-        );
-        const base64Jpeg = msgObj.data as string;
-        await this.geminiManager.imageHandler.processCompleteImage(
-            base64Jpeg,
-            null,
-            this.connectionState.isGeminiConnected,
-        );
     }
 
     private handleInstruction(msgObj: any) {
@@ -1825,7 +1749,7 @@ class DeviceMessageHandler {
         // Signal turn complete
         this.geminiManager.sendTurnComplete();
 
-        // Acknowledge device
+        // Acknowlazure device
         if (this.deviceWs.readyState === WSWebSocket.OPEN) {
             this.deviceWs.send(JSON.stringify({ type: 'server', msg: 'AUDIO.COMMITTED' }));
         }
@@ -1841,9 +1765,30 @@ class DeviceMessageHandler {
 
 export function setupWebSocketConnectionHandler(wss: _WSS) {
     wss.on('connection', async (deviceWs: WSWebSocket, context: ConnectionContext) => {
-        const { user, supabase, timestamp } = context;
+        const { user, supabase } = context;
         const logger = new Logger('[Main]');
         logger.info(`Device WebSocket connected for user: ${user.user_id}`);
+
+        // Check for resumable session
+        const sessionErrorTracker = SessionErrorTracker.getInstance();
+        const resumableSession = sessionErrorTracker.getResumableSession(user.user_id);
+
+        let sessionId: string;
+        let shouldResumeSession = false;
+
+        if (resumableSession && ENABLE_SESSION_RESUMPTION) {
+            sessionId = resumableSession.sessionId;
+            shouldResumeSession = true;
+            logger.info(
+                `🔄 RESUMING SESSION: Found resumable session ${truncateSessionId(sessionId)} for user ${user.user_id} ` +
+                `(error: ${resumableSession.errorType}, age: ${Math.round((Date.now() - resumableSession.timestamp.getTime()) / 1000)}s)`
+            );
+        } else {
+            sessionId = `live-${user.user_id}-${Date.now()}-${
+                Math.random().toString(36).substring(2, 11)
+            }`;
+            logger.info(`🆕 FRESH SESSION: Creating new session ${truncateSessionId(sessionId)} for user ${user.user_id}`);
+        }
 
         // Initialize connection state
         const connectionState: ConnectionState = {
@@ -1854,9 +1799,7 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
             retryCount: 0,
             retryTimeoutId: null,
             keepAliveIntervalId: null,
-            sessionId: `live-${user.user_id}-${Date.now()}-${
-                Math.random().toString(36).substr(2, 9)
-            }`,
+            sessionId,
         };
 
         // Initialize audio state
@@ -1902,12 +1845,45 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
             imageState,
         );
 
-        // Create Flash 2.5 session with callbacks from Gemini manager
-        createFlash25Session(
-            connectionState.sessionId,
-            user.user_id,
-            geminiManager.deviceCallbacks,
-        );
+        // Create or resume Flash 2.5 session with callbacks from Gemini manager
+        if (shouldResumeSession && resumableSession) {
+            logger.info(`🔄 Attempting to resume Flash 2.5 session: ${truncateSessionId(connectionState.sessionId)}`);
+            // Try to resume the session - if it fails, create a new one
+            try {
+                createFlash25Session(
+                    connectionState.sessionId,
+                    user.user_id,
+                    geminiManager.deviceCallbacks,
+                    user,
+                );
+                // Clear the resumable session since we successfully resumed
+                sessionErrorTracker.clearResumableSession(user.user_id);
+                logger.info(`✅ Successfully resumed Flash 2.5 session: ${truncateSessionId(connectionState.sessionId)}`);
+            } catch (error) {
+                logger.error(`❌ Failed to resume session, creating fresh session:`, error);
+                // Create a fresh session if resumption fails
+                const freshSessionId = `live-${user.user_id}-${Date.now()}-${
+                    Math.random().toString(36).substring(2, 11)
+                }`;
+                connectionState.sessionId = freshSessionId;
+                createFlash25Session(
+                    connectionState.sessionId,
+                    user.user_id,
+                    geminiManager.deviceCallbacks,
+                    user,
+                );
+                sessionErrorTracker.clearResumableSession(user.user_id);
+                logger.info(`🆕 Created fallback fresh session: ${truncateSessionId(connectionState.sessionId)}`);
+            }
+        } else {
+            logger.info(`🆕 Creating fresh Flash 2.5 session: ${truncateSessionId(connectionState.sessionId)}`);
+            createFlash25Session(
+                connectionState.sessionId,
+                user.user_id,
+                geminiManager.deviceCallbacks,
+                user,
+            );
+        }
 
         // Create device message handler
         const deviceMessageHandler = new DeviceMessageHandler(
@@ -1926,16 +1902,16 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
         try {
             const deviceInfo = await getDeviceInfo(supabase, user.user_id);
             if (deviceInfo) {
-                currentVolume = deviceInfo.volume ?? 100;
+                currentVolume = deviceInfo.volume ?? 70;
                 isOta = deviceInfo.is_ota || false;
                 isReset = deviceInfo.is_reset || false;
                 logger.info(
                     `Fetched initial device info: Volume=${currentVolume}, OTA=${isOta}, Reset=${isReset}`,
                 );
             } else {
-                currentVolume = 100;
+                currentVolume = 70;
                 logger.warn(
-                    `No device info found for user ${user.user_id}, defaulting volume to 100.`,
+                    `No device info found for user ${user.user_id}, defaulting volume to 70.`,
                 );
             }
             deviceWs.send(JSON.stringify({
@@ -1947,10 +1923,10 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
             }));
         } catch (err) {
             logger.error('Failed to get initial device info:', err);
-            currentVolume = 100;
+            currentVolume = 70;
             deviceWs.send(JSON.stringify({
                 type: 'auth',
-                volume_control: 100,
+                volume_control: 70,
                 pitch_factor: 1,
                 is_ota: false,
                 is_reset: false,
@@ -1991,6 +1967,14 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
                 connectionState.pipelineActive = false;
                 logger.info('Closing Gemini WS due to device error.');
 
+                // Save session for resumption due to device error
+                sessionErrorTracker.saveSessionForResumption(
+                    user.user_id,
+                    connectionState.sessionId,
+                    'device_error',
+                    `Device WebSocket error: ${err instanceof Error ? err.message : String(err)}`
+                );
+
                 if (connectionState.retryTimeoutId) {
                     logger.info('Device error, cancelling pending Gemini reconnect.');
                     clearTimeout(connectionState.retryTimeoutId);
@@ -2011,6 +1995,21 @@ export function setupWebSocketConnectionHandler(wss: _WSS) {
             logger.info(`Device WS closed => Code: ${code}, Reason: ${reason.toString()}`);
             connectionState.deviceClosed = true;
             connectionState.pipelineActive = false;
+
+            // Check if this is an abnormal close that should trigger session resumption
+            const isAbnormalClose = code !== 1000 && code !== 1001; // 1000 = normal, 1001 = going away
+            if (isAbnormalClose) {
+                sessionErrorTracker.saveSessionForResumption(
+                    user.user_id,
+                    connectionState.sessionId,
+                    'connection_failed',
+                    `Device connection closed abnormally: Code ${code}, Reason: ${reason.toString()}`
+                );
+            } else {
+                // Normal close - clear any existing resumable session
+                sessionErrorTracker.clearResumableSession(user.user_id);
+                logger.info('Normal device disconnection - cleared any resumable session');
+            }
 
             // Clean up image chunk assembly
             if (imageState.chunkTimeoutId) {

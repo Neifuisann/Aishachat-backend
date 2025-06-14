@@ -33,7 +33,6 @@ declare global {
         is_story: boolean;
         key: string;
         oai_voice: 'Puck' | 'Charon' | 'Kore' | 'Fenrir' | 'Aoede' | 'Leda' | 'Orus' | 'Zephyr';
-        elevenlabs_voice_id?: string; // Optional ElevenLabs voice ID for TTS
         voice_description: string;
         title: string;
         subtitle: string;
@@ -58,8 +57,12 @@ declare global {
         favorite_phrases: string;
     }
 
-    interface IUserMetadata {}
-    interface IBusinessMetadata {}
+    interface IUserMetadata {
+        // Empty interface for user metadata
+    }
+    interface IBusinessMetadata {
+        // Empty interface for business metadata
+    }
 
     type UserInfo =
         | {

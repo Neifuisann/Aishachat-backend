@@ -27,6 +27,10 @@ class ApiKeyManager {
         this.apiKeys = [
             primaryKey,
             'AIzaSyAwwEL1GPN-bdH0wJFlJG_EugrG5do8cxM',
+            'AIzaSyBPcFqnv3ZWHt-pRkGl9V_o_Sd79VNnSug',
+            'AIzaSyBYxmLg3eomM-2jCOjyuM68w21QkSTfRkQ',
+            'AIzaSyCjbjQNaqBttMGvk5K4W0Q9JbMQExkCI3Q',
+
         ];
 
         logger.info(`Initialized API key pool with ${this.apiKeys.length} keys`);
@@ -134,35 +138,23 @@ export const AUDIO_DEBUG_DIR = Deno.env.get('AUDIO_DEBUG_DIR') || './debug_audio
 export const AUDIO_DEBUG_MAX_FILES = Number(Deno.env.get('AUDIO_DEBUG_MAX_FILES') || '50');
 
 // TTS Provider Configuration
-export type TTSProvider = 'GEMINI' | 'ELEVEN_LABS' | 'OPENAI' | 'EDGE_TTS';
+export type TTSProvider = 'GEMINI' | 'AZURE_TTS';
 
 export const TTS_PROVIDER = (Deno.env.get('TTS_PROVIDER') || 'GEMINI').toUpperCase() as TTSProvider;
 
 // Validate TTS provider
-const validProviders: TTSProvider[] = ['GEMINI', 'ELEVEN_LABS', 'OPENAI', 'EDGE_TTS'];
+const validProviders: TTSProvider[] = ['GEMINI', 'AZURE_TTS'];
 if (!validProviders.includes(TTS_PROVIDER)) {
     logger.warn(`Invalid TTS_PROVIDER: ${TTS_PROVIDER}. Falling back to GEMINI.`);
     // We can't reassign the const, but we'll handle this in the validation function
 }
 
-// ElevenLabs TTS Configuration
-export const ELEVENLABS_API_KEY = Deno.env.get('ELEVENLABS_API_KEY') || '';
-
-// OpenAI TTS Configuration
-export const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY') || '';
-
-// Edge TTS Configuration (no API key required)
-export const EDGE_TTS_DEFAULT_VOICE = Deno.env.get('EDGE_TTS_DEFAULT_VOICE') ||
-    'vi-VN-HoaiMyNeural';
-export const EDGE_TTS_DEFAULT_FORMAT = Deno.env.get('EDGE_TTS_DEFAULT_FORMAT') ||
-    'AUDIO_24KHZ_96KBITRATE_MONO_MP3';
-export const EDGE_TTS_DEFAULT_SPEED = parseFloat(Deno.env.get('EDGE_TTS_DEFAULT_SPEED') || '1.1');
-
-// Backward compatibility
-export const USE_ELEVENLABS_TTS = TTS_PROVIDER === 'ELEVEN_LABS';
-
-// Flash Live Mode Configuration
-export const USE_FLASH_LIVE_AS_BASE = Deno.env.get('USE_FLASH_LIVE_AS_BASE') !== 'false';
+// Azure TTS Configuration
+export const AZURE_TTS_DEFAULT_VOICE = Deno.env.get('AZURE_TTS_DEFAULT_VOICE') ||
+    'zh-CN-XiaochenMultilingual';
+export const AZURE_TTS_ENDPOINT = Deno.env.get('AZURE_TTS_ENDPOINT') ||
+    'https://southeastasia.api.cognitive.microsoft.com';
+export const AZURE_TTS_KEY = Deno.env.get('AZURE_TTS_KEY');
 
 /**
  * Get the effective TTS provider (with fallback logic)
@@ -183,13 +175,8 @@ export function getEffectiveTTSProvider(): TTSProvider {
  */
 export function validateTTSProvider(provider: TTSProvider): boolean {
     switch (provider) {
-        case 'ELEVEN_LABS':
-            return ELEVENLABS_API_KEY !== '' &&
-                ELEVENLABS_API_KEY !== 'your_elevenlabs_api_key_here';
-        case 'OPENAI':
-            return OPENAI_API_KEY !== '' && OPENAI_API_KEY !== 'your_openai_api_key_here';
-        case 'EDGE_TTS':
-            return true; // Edge TTS doesn't require an API key
+        case 'AZURE_TTS':
+            return typeof AZURE_TTS_KEY === 'string' && AZURE_TTS_KEY.length > 0;
         case 'GEMINI':
             return true; // Gemini TTS is always available if Gemini API is configured
         default:
@@ -221,6 +208,12 @@ export const CIRCUIT_BREAKER_CONFIG = {
 export const KEEP_ALIVE_CONFIG = {
     intervalMs: 30000, // 30 seconds keep-alive interval
     timeoutMs: 10000, // 10 seconds timeout for keep-alive response
+};
+
+// Session Resumption Configuration
+export const SESSION_RESUMPTION_CONFIG = {
+    enabled: Deno.env.get('ENABLE_SESSION_RESUMPTION') !== 'false', // Enabled by default, set to 'false' to disable
+    timeoutMs: Number(Deno.env.get('SESSION_RESUMPTION_TIMEOUT_MS') || '300000'), // 5 minutes default
 };
 
 // Server Configuration

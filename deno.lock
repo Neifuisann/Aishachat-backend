@@ -19,7 +19,6 @@
     "npm:@types/node@*": "22.12.0",
     "npm:@types/ws@^8.5.12": "8.18.1",
     "npm:jimp@~0.22.12": "0.22.12_@jimp+custom@0.22.12",
-    "npm:msedge-tts@2": "2.0.0_ws@8.18.1",
     "npm:wave-resampler@*": "1.0.0",
     "npm:ws@*": "8.18.1",
     "npm:ws@^8.18.0": "8.18.1"
@@ -1182,19 +1181,6 @@
     "ms@2.1.3": {
       "integrity": "sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA=="
     },
-    "msedge-tts@2.0.0_ws@8.18.1": {
-      "integrity": "sha512-9qmAh80/rvEFCWDlfqHvrZzf9zioEqksiwpNKSy8MuBud27D6FNPVTHNDc1c37dX0u6w7iYe++Dg/V0a9fAFSw==",
-      "dependencies": [
-        "axios",
-        "buffer@6.0.3",
-        "crypto-browserify",
-        "isomorphic-ws",
-        "process",
-        "randombytes",
-        "stream-browserify",
-        "ws"
-      ]
-    },
     "negotiator@1.0.0": {
       "integrity": "sha512-8Ofs/AUQh8MaEcrlq5xOX0CQ9ypTF5dl78mjlMNfOK08fzpgTHQRQPBxcPlEtIw0yRpws+Zo/3r+5WRby7u3Gg=="
     },
@@ -1852,7 +1838,6 @@
       "npm:@supabase/supabase-js@^2.48.1",
       "npm:@types/ws@^8.5.12",
       "npm:jimp@~0.22.12",
-      "npm:msedge-tts@2",
       "npm:ws@^8.18.0"
     ]
   }

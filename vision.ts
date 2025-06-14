@@ -17,7 +17,7 @@ export async function callGeminiVision(base64Image: string, prompt: string): Pro
     }
 
     // Retry logic with key rotation for quota exceeded errors
-    let maxRetries = apiKeyManager.getTotalKeys();
+    const maxRetries = apiKeyManager.getTotalKeys();
     let retryCount = 0;
 
     while (retryCount < maxRetries) {
@@ -40,10 +40,7 @@ export async function callGeminiVision(base64Image: string, prompt: string): Pro
                     },
                 ],
                 generationConfig: {
-                    temperature: 0,
-                    thinkingConfig: {
-                        thinkingBudget: 2000,
-                    },
+                    temperature: 0.3,
                 },
             };
 
