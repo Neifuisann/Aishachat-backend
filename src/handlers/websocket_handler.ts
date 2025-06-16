@@ -817,13 +817,13 @@ class GeminiConnectionManager {
                     {
                         name: 'transferModal',
                         description:
-                        'Transfers user original speech. Use for all user commands. Preserve user intent and context.',
+                        'Transfers user original speech. Use for all user commands.',
                         parameters: {
                             type: 'OBJECT',
                             properties: {
                                 userCommand: {
                                     type: 'STRING',
-                                description: "The user's speech converted to text with correction if needed.",
+                                description: "The user's speech converted to text.",
                                 },
                             },
                             required: ['userCommand'],

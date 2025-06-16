@@ -67,7 +67,7 @@ const DEFAULT_RETRY_CONFIG: RetryConfig = {
 } as const;
 
 const SEARCH_CONFIG: SearchHandlerConfig = {
-    temperature: 0.1,
+    temperature: 0.0,
     model: 'gemini-2.0-flash',
     responseMimeType: 'text/plain',
 } as const;
