@@ -156,6 +156,24 @@ export const AZURE_TTS_ENDPOINT = Deno.env.get('AZURE_TTS_ENDPOINT') ||
     'https://southeastasia.api.cognitive.microsoft.com';
 export const AZURE_TTS_KEY = Deno.env.get('AZURE_TTS_KEY');
 
+// STT Provider Configuration
+export type STTProvider = 'GEMINI_LIVE' | 'AZURE_STT';
+
+export const STT_PROVIDER = (Deno.env.get('STT_PROVIDER') || 'GEMINI_LIVE').toUpperCase() as STTProvider;
+
+// Validate STT provider
+const validSTTProviders: STTProvider[] = ['GEMINI_LIVE', 'AZURE_STT'];
+if (!validSTTProviders.includes(STT_PROVIDER)) {
+    logger.warn(`Invalid STT_PROVIDER: ${STT_PROVIDER}. Falling back to GEMINI_LIVE.`);
+}
+
+// Azure STT Configuration
+export const AZURE_STT_LANGUAGE = Deno.env.get('AZURE_STT_LANGUAGE') || 'vi-VN';
+export const AZURE_STT_ENDPOINT = Deno.env.get('AZURE_STT_ENDPOINT') ||
+    'https://southeastasia.stt.speech.microsoft.com';
+// Use AZURE_SPEECH_KEY for consistency with Azure TTS and azure_stt.ts module
+export const AZURE_STT_KEY = Deno.env.get('AZURE_SPEECH_KEY');
+
 /**
  * Get the effective TTS provider (with fallback logic)
  * @returns The TTS provider to use
@@ -179,6 +197,34 @@ export function validateTTSProvider(provider: TTSProvider): boolean {
             return typeof AZURE_TTS_KEY === 'string' && AZURE_TTS_KEY.length > 0;
         case 'GEMINI':
             return true; // Gemini TTS is always available if Gemini API is configured
+        default:
+            return false;
+    }
+}
+
+/**
+ * Get the effective STT provider (with fallback logic)
+ * @returns The STT provider to use
+ */
+export function getEffectiveSTTProvider(): STTProvider {
+    if (!validSTTProviders.includes(STT_PROVIDER)) {
+        logger.warn(`Invalid STT_PROVIDER: ${STT_PROVIDER}. Falling back to GEMINI_LIVE.`);
+        return 'GEMINI_LIVE';
+    }
+    return STT_PROVIDER;
+}
+
+/**
+ * Validate STT provider configuration
+ * @param provider The STT provider to validate
+ * @returns boolean indicating if the provider is properly configured
+ */
+export function validateSTTProvider(provider: STTProvider): boolean {
+    switch (provider) {
+        case 'AZURE_STT':
+            return typeof AZURE_STT_KEY === 'string' && AZURE_STT_KEY.length > 0;
+        case 'GEMINI_LIVE':
+            return true; // Gemini Live STT is always available if Gemini API is configured
         default:
             return false;
     }
@@ -218,5 +264,5 @@ export const SESSION_RESUMPTION_CONFIG = {
 
 // Server Configuration
 export const HOST = Deno.env.get('HOST') || '0.0.0.0';
-// Default to 8080 unless DEV_MODE is true, then default to 8000
-export const PORT = Number(Deno.env.get('PORT') || (isDev ? 8000 : 8080));
+// Default to 8080 unless DEV_MODE is true, then default to 1234
+export const PORT = Number(Deno.env.get('PORT') || (isDev ? 1234 : 8080));

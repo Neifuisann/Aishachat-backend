@@ -272,9 +272,9 @@ const RETRYABLE_ERROR_MESSAGES = [
 ];
 
 const MODEL_CONFIG = {
-    model: 'gemini-2.5-flash-preview-05-20',
+    model: 'gemini-2.5-flash',
     temperature: 0.3,
-    thinkingBudget: 250,
+    thinkingBudget: 1000,
     responseMimeType: 'text/plain',
 };
 
