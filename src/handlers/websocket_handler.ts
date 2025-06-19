@@ -973,25 +973,6 @@ class GeminiConnectionManager {
         if (this.states.tts.toolCallInProgress && !this.states.tts.responseCreatedSent) {
             this.states.tts.toolCallInProgress = false;
         }
-
-        await new Promise(resolve => setTimeout(resolve, 100));
-
-        if (this.ttsManager.isExternalTTSEnabled() && this.states.tts.ttsTextBuffer.trim()) {
-            this.logger.info(`Scheduling TTS processing for ${this.states.tts.ttsTextBuffer.length} chars`);
-            
-            if (this.states.tts.ttsTimeout) {
-                clearTimeout(this.states.tts.ttsTimeout);
-            }
-
-            this.states.tts.ttsTimeout = setTimeout(async () => {
-                await this.ttsManager.processTTSWithDelay();
-                if (this.states.tts.responseCreatedSent) {
-                    await this.sendResponseComplete();
-                }
-            }, CONSTANTS.TTS_DELAY_MS) as unknown as number;
-        } else if (!this.ttsManager.isExternalTTSEnabled() && this.states.tts.responseCreatedSent) {
-            await this.sendResponseComplete();
-        }
     }
 
     private async sendResponseComplete(): Promise<void> {

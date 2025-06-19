@@ -2,7 +2,7 @@
  * ADPCM (Adaptive Differential Pulse Code Modulation) Implementation for Deno
  * 
  * This implementation provides 4:1 compression ratio for 16-bit PCM audio.
- * Optimized for VoIP applications in bandwidth-constrained environments.
+ *  for VoIP applications in bandwidth-constrained environments.
  * 
  * Features:
  * - 16-bit PCM ↔ 4-bit ADPCM conversion
