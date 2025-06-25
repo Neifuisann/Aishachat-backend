@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-//  Azure Text‑to‑Speech helper for AISHA            ©2025 elatoai / MIT‐0
+//  Azure Text‑to‑Speech helper for AISHA            ©2025 aishaai / MIT‐0
 // ---------------------------------------------------------------------------
 //  Environment variables required
 //   • AZURE_SPEECH_KEY      – Primary or secondary key of your Speech resource
